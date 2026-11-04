@@ -23,6 +23,10 @@ namespace Reclaim.Core.Infrastructure
             sb.Append("listen 127.0.0.1:53\n");
             sb.Append("control reclaim-nextdns\n");
             sb.Append("cache-size 10MB\n");
+            // Giới hạn TTL gửi cho client để thay đổi profile NextDNS có hiệu lực nhanh hơn (cache của nextdns vẫn giữ TTL thật).
+            sb.Append("max-ttl 5m\n");
+            // Reclaim không cần mDNS của nextdns (mặc định "all" = nghe trên mọi adapter).
+            sb.Append("mdns disabled\n");
             sb.Append("log-queries false\n");
             sb.Append("report-client-info false\n");
             sb.Append("detect-captive-portals false\n");
