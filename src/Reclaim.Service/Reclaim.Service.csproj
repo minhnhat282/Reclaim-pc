@@ -18,9 +18,14 @@
   <!-- Chép nextdns.exe (nguyên bản) vào <OutDir>\nextdns\ -->
   <PropertyGroup>
     <NextDnsSource>$(MSBuildThisFileDirectory)..\..\third_party\nextdns\nextdns.exe</NextDnsSource>
+    <NextDnsLicense>$(MSBuildThisFileDirectory)..\..\third_party\nextdns\LICENSE.txt</NextDnsLicense>
   </PropertyGroup>
   <Target Name="CopyNextDns" AfterTargets="Build">
     <Copy SourceFiles="$(NextDnsSource)" DestinationFolder="$(OutDir)nextdns" Condition="Exists('$(NextDnsSource)')" />
+    <!-- nextdns dùng giấy phép MIT: văn bản giấy phép đi kèm nextdns.exe khi cài đặt -->
+    <Copy SourceFiles="$(NextDnsLicense)" DestinationFolder="$(OutDir)nextdns" Condition="Exists('$(NextDnsLicense)')" />
+    <Warning Condition="Exists('$(NextDnsSource)') And !Exists('$(NextDnsLicense)')"
+             Text="Thiếu third_party\nextdns\LICENSE.txt (giấy phép MIT của nextdns). Cần kèm theo khi phân phối nextdns.exe." />
     <Warning Condition="!Exists('$(NextDnsSource)')"
              Text="Thiếu third_party\nextdns\nextdns.exe - xem third_party\nextdns\README.txt. Ứng dụng sẽ không cài đặt được nếu thiếu file này." />
   </Target>
