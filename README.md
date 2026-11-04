@@ -83,6 +83,8 @@ Hướng mở rộng: luật Windows Firewall chỉ cho nextdns.exe ra cổng 53
 - Khôi phục DNS: bản sao lưu của adapter nào chưa khôi phục được sẽ được giữ lại để thử lại; không bao giờ tự đổi DNS tĩnh gốc sang DHCP. Tắt bảo vệ/gỡ cài đặt bị hủy nếu không trả được DNS.
 - Khi đã đặt mật khẩu, xem nhật ký nextdns cũng cần mở khóa. File cài đặt và sao lưu DNS được ghi nguyên tử (có `.bak`).
 - Nếu nextdns chết/chưa chạy, DNS vẫn trỏ 127.0.0.1 nên mạng tạm mất cho tới khi dịch vụ dựng lại nextdns (vài giây) - chủ ý "fail-closed".
+- `max-ttl 5m`: client (Windows) không giữ kết quả DNS quá 5 phút, nên thay đổi profile trên NextDNS có hiệu lực nhanh hơn.
+- `mdns disabled`: tắt mDNS của nextdns. Nếu tên thiết bị `.local` trong mạng nội bộ không phân giải được, hãy xóa dòng này trong `NextDnsConfig.cs`.
 - `detect-captive-portals` tắt: không đăng nhập được Wi-Fi công cộng cần trang đăng nhập khi đang bật bảo vệ (tắt bảo vệ tạm để đăng nhập).
 - Dừng dịch vụ chủ động (bảo trì/gỡ) sẽ trả DNS về ban đầu (khôi phục cả DNS tĩnh đã lưu trong `dns-backup.json`); tắt máy thì giữ nguyên.
 - IPv6 trỏ về `::1` giống `nextdns activate`; nextdns chỉ nghe IPv4 nên truy vấn IPv6 thất bại ngay và Windows dùng IPv4.
