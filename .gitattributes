@@ -1,0 +1,7 @@
+* text=auto
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.sh text eol=lf
+*.yml text eol=lf
+*.exe binary
+*.zip binary
