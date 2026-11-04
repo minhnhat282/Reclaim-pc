@@ -41,6 +41,16 @@ jobs:
             if (-not $exe) { throw "Không thấy nextdns.exe trong $asset" }
             Copy-Item $exe.FullName $dest
           }
+          # nextdns dùng giấy phép MIT: phải kèm văn bản giấy phép khi phân phối. Lấy đúng từ repo gốc ở thẻ phiên bản.
+          $lic = "third_party/nextdns/LICENSE.txt"
+          if (-not (Test-Path $lic)) {
+            $got = $false
+            foreach ($tag in @("v$env:NEXTDNS_VERSION", $env:NEXTDNS_VERSION)) {
+              $txt = gh api "repos/nextdns/nextdns/contents/LICENSE?ref=$tag" -H "Accept: application/vnd.github.raw"
+              if ($LASTEXITCODE -eq 0 -and $txt) { $txt | Out-File $lic -Encoding utf8NoBOM; $got = $true; break }
+            }
+            if (-not $got) { throw "Không lấy được LICENSE của nextdns" }
+          }
           $hash = (Get-FileHash $dest -Algorithm SHA256).Hash.ToLower()
           "nextdns.exe SHA-256: ``$hash``" | Out-File -Append $env:GITHUB_STEP_SUMMARY
           $pin = "third_party/nextdns/nextdns.sha256"
@@ -60,7 +70,7 @@ jobs:
       - name: Kiểm tra đầu ra build
         shell: pwsh
         run: |
-          foreach ($f in "build/Release/Reclaim.exe","build/Release/Reclaim.Service.exe","build/Release/nextdns/nextdns.exe") {
+          foreach ($f in "build/Release/Reclaim.exe","build/Release/Reclaim.Service.exe","build/Release/nextdns/nextdns.exe","build/Release/nextdns/LICENSE.txt") {
             if (-not (Test-Path $f)) { throw "Thiếu $f sau khi build" }
           }
 
