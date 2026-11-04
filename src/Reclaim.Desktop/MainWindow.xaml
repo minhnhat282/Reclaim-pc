@@ -1,0 +1,97 @@
+<Window x:Class="Reclaim.Desktop.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Reclaim" Width="440" SizeToContent="Height" ResizeMode="CanMinimize"
+        WindowStartupLocation="CenterScreen"
+        Background="{DynamicResource Bg}" TextElement.Foreground="{DynamicResource Text}"
+        FontFamily="Segoe UI Variable Text, Segoe UI" FontSize="14" UseLayoutRounding="True">
+    <StackPanel Margin="24,20,24,20">
+
+        <!-- Đầu trang -->
+        <Grid Margin="0,0,0,16">
+            <StackPanel>
+                <TextBlock Text="Reclaim" FontSize="28" FontWeight="SemiBold"/>
+                <TextBlock Text="Bảo vệ DNS với NextDNS" Style="{StaticResource Sub}"/>
+            </StackPanel>
+            <Border HorizontalAlignment="Right" VerticalAlignment="Top" Background="{DynamicResource Card}"
+                    BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="14" Padding="10,5">
+                <StackPanel Orientation="Horizontal">
+                    <Ellipse x:Name="StatusDot" Width="9" Height="9" Margin="0,0,7,0" Fill="{DynamicResource Warn}"/>
+                    <TextBlock x:Name="StatusText" Text="Đang kiểm tra…" FontSize="12.5"/>
+                </StackPanel>
+            </Border>
+        </Grid>
+
+        <!-- Dịch vụ không khả dụng -->
+        <Border x:Name="UnavailablePanel" Style="{StaticResource CardStyle}" Visibility="Collapsed">
+            <StackPanel>
+                <TextBlock x:Name="UnavailableText" TextWrapping="Wrap" Margin="0,0,0,14"/>
+                <Button x:Name="InstallButton" Content="Cài đặt Reclaim" Style="{StaticResource PrimaryButton}"
+                        Click="InstallButton_Click"/>
+            </StackPanel>
+        </Border>
+
+        <!-- Giao diện chính -->
+        <StackPanel x:Name="MainPanel" Visibility="Collapsed">
+
+            <Border Style="{StaticResource CardStyle}">
+                <StackPanel>
+                    <TextBlock Text="NextDNS ID" Style="{StaticResource Label}"/>
+                    <TextBox x:Name="ProfileBox" Style="{StaticResource Input}" MaxLength="32" CharacterCasing="Lower"
+                             TextChanged="ProfileBox_TextChanged"/>
+                    <TextBlock Text="6 ký tự, ví dụ: abc123. Xem ở mục Setup trên trang my.nextdns.io." Style="{StaticResource Sub}" Margin="0,6,0,16"/>
+
+                    <CheckBox x:Name="EnabledToggle" Content="Bật bảo vệ DNS" Style="{StaticResource ToggleSwitch}"
+                              Margin="0,0,0,16" Click="EnabledToggle_Click"/>
+
+                    <Button x:Name="SaveButton" Content="Lưu và áp dụng" Style="{StaticResource PrimaryButton}"
+                            Click="SaveButton_Click"/>
+
+                    <TextBlock x:Name="WebLink" Text="Mở cài đặt nâng cao trên web" Foreground="{DynamicResource Accent}"
+                               TextDecorations="Underline" Cursor="Hand" FontSize="12.5" Margin="0,12,0,0"
+                               HorizontalAlignment="Center" MouseLeftButtonUp="WebLink_Click"/>
+                </StackPanel>
+            </Border>
+
+            <Border Style="{StaticResource CardStyle}">
+                <StackPanel>
+                    <TextBlock Text="Tự bảo vệ" Style="{StaticResource Label}" Margin="0,0,0,2"/>
+                    <TextBlock x:Name="LockInfoText" Style="{StaticResource Sub}" Margin="0,0,0,14"/>
+
+                    <CheckBox x:Name="ProtUninstall" Content="Chống gỡ cài đặt ứng dụng" Style="{StaticResource ToggleSwitch}"
+                              Margin="0,0,0,12" Click="Protection_Click"/>
+                    <CheckBox x:Name="ProtSettings" Content="Chống thay đổi cài đặt" Style="{StaticResource ToggleSwitch}"
+                              Margin="0,0,0,12" Click="Protection_Click"/>
+                    <CheckBox x:Name="ProtService" Content="Chống vô hiệu hóa dịch vụ" Style="{StaticResource ToggleSwitch}"
+                              Margin="0,0,0,16" Click="Protection_Click"/>
+
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <Button x:Name="LockButton" Style="{StaticResource GhostButton}" Click="LockButton_Click"/>
+                        <Button x:Name="MoreButton" Grid.Column="1" Content="Thêm…" Style="{StaticResource GhostButton}"
+                                Margin="10,0,0,0" Click="MoreButton_Click">
+                            <Button.ContextMenu>
+                                <ContextMenu x:Name="MoreMenu">
+                                    <MenuItem x:Name="ChangePwItem" Header="Đổi mật khẩu" Click="ChangePw_Click"/>
+                                    <MenuItem x:Name="RemovePwItem" Header="Xóa mật khẩu" Click="RemovePw_Click"/>
+                                    <MenuItem x:Name="MaintenanceItem" Header="Tạm gỡ bảo vệ 5 phút (để nâng cấp)" Click="Maintenance_Click"/>
+                                    <Separator/>
+                                    <MenuItem Header="Xem nhật ký nextdns" Click="Log_Click"/>
+                                </ContextMenu>
+                            </Button.ContextMenu>
+                        </Button>
+                    </Grid>
+                </StackPanel>
+            </Border>
+
+            <TextBlock x:Name="MessageText" TextWrapping="Wrap" Margin="2,0,2,10" Visibility="Collapsed"/>
+
+            <TextBlock Text="Gỡ cài đặt Reclaim" Foreground="{DynamicResource SubText}" FontSize="12.5"
+                       TextDecorations="Underline" Cursor="Hand" HorizontalAlignment="Center"
+                       MouseLeftButtonUp="Uninstall_Click"/>
+        </StackPanel>
+    </StackPanel>
+</Window>

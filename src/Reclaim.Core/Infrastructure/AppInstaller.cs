@@ -1,0 +1,290 @@
+using System;
+using System.IO;
+using System.Linq;
+using System.Reflection;
+using System.Security.Principal;
+using System.ServiceProcess;
+using Microsoft.Win32;
+using Reclaim.Core.Domain;
+
+namespace Reclaim.Core.Infrastructure
+{
+    /// <summary>
+    /// Cài đặt / gỡ cài đặt không cần trình cài đặt ngoài: sao chép file, đăng ký dịch vụ Windows,
+    /// mục "Apps &amp; features" và lối tắt Start Menu. Phải chạy với quyền quản trị.
+    /// </summary>
+    public static class AppInstaller
+    {
+        private const string UninstallKey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\" + AppPaths.ProductName;
+        private const string SafeBootKey = @"SYSTEM\CurrentControlSet\Control\SafeBoot\Network\" + AppPaths.ServiceName;
+
+        public static bool IsAdmin()
+        {
+            using (WindowsIdentity identity = WindowsIdentity.GetCurrent())
+            {
+                return new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
+            }
+        }
+
+        public static bool IsServiceInstalled()
+        {
+            try
+            {
+                return ServiceController.GetServices().Any(s => s.ServiceName == AppPaths.ServiceName);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        // ------------------------------------------------------------------ cài đặt
+
+        public static void Install(string sourceDir)
+        {
+            RequireAdmin();
+            sourceDir = sourceDir.TrimEnd('\\');
+
+            if (!File.Exists(Path.Combine(sourceDir, "nextdns", "nextdns.exe")))
+            {
+                throw new ReclaimException(ErrorCodes.MissingBinary,
+                    "Không tìm thấy nextdns\\nextdns.exe cạnh ứng dụng. Xem third_party\\nextdns\\README.txt.");
+            }
+            if (!File.Exists(Path.Combine(sourceDir, AppPaths.ServiceExeName)) || !File.Exists(Path.Combine(sourceDir, AppPaths.GuiExeName)))
+            {
+                throw new ReclaimException(ErrorCodes.BadRequest, "Thiếu Reclaim.exe hoặc Reclaim.Service.exe trong thư mục build.");
+            }
+
+            bool exists = IsServiceInstalled();
+            if (exists) StopService();
+
+            try
+            {
+                if (!string.Equals(sourceDir, AppPaths.InstallDir, StringComparison.OrdinalIgnoreCase))
+                {
+                    CopyTree(sourceDir, AppPaths.InstallDir);
+                }
+                Directory.CreateDirectory(AppPaths.DataDir);
+
+                // Bản nextdns mới có thể khác: để dịch vụ ghi nhận lại mã băm ở lần chạy đầu.
+                var store = new JsonSettingsStore(AppPaths.SettingsFile, NullLog.Instance);
+                AppSettings settings = store.Load();
+                settings.NextDnsSha256 = string.Empty;
+                store.Save(settings);
+            }
+            catch (UnauthorizedAccessException)
+            {
+                throw new ReclaimException(ErrorCodes.Denied,
+                    "Không ghi được vào thư mục cài đặt. Nếu đang bật tự bảo vệ, hãy dùng \"Tạm gỡ bảo vệ\" trong ứng dụng trước.");
+            }
+            catch (IOException ex)
+            {
+                throw new ReclaimException(ErrorCodes.Denied, "Không sao chép được file (đang được sử dụng?): " + ex.Message);
+            }
+
+            string binPath = "\"" + Path.Combine(AppPaths.InstallDir, AppPaths.ServiceExeName) + "\" --service";
+            string quoted = "\"" + binPath.Replace("\"", "\\\"") + "\"";
+
+            if (!exists)
+            {
+                RunSc("create " + AppPaths.ServiceName + " binPath= " + quoted + " start= auto obj= LocalSystem DisplayName= \"Reclaim\"");
+            }
+            else
+            {
+                RunSc("config " + AppPaths.ServiceName + " binPath= " + quoted + " start= auto");
+            }
+            RunSc("description " + AppPaths.ServiceName + " \"Reclaim DNS protection service\"");
+            RunSc("failure " + AppPaths.ServiceName + " reset= 86400 actions= restart/5000/restart/5000/restart/5000");
+
+            using (RegistryKey k = Registry.LocalMachine.CreateSubKey(SafeBootKey))
+            {
+                k.SetValue(string.Empty, "Service");
+            }
+            WriteUninstallEntry();
+            CreateShortcut();
+
+            StartService();
+        }
+
+        private static void WriteUninstallEntry()
+        {
+            string gui = Path.Combine(AppPaths.InstallDir, AppPaths.GuiExeName);
+            using (RegistryKey k = Registry.LocalMachine.CreateSubKey(UninstallKey))
+            {
+                k.SetValue("DisplayName", "Reclaim");
+                k.SetValue("DisplayVersion", Assembly.GetExecutingAssembly().GetName().Version.ToString(3));
+                k.SetValue("Publisher", "Reclaim");
+                k.SetValue("InstallLocation", AppPaths.InstallDir);
+                k.SetValue("DisplayIcon", gui);
+                k.SetValue("UninstallString", "\"" + gui + "\" /uninstall");
+                k.SetValue("NoModify", 1, RegistryValueKind.DWord);
+                k.SetValue("NoRepair", 1, RegistryValueKind.DWord);
+            }
+        }
+
+        private static string ShortcutPath
+        {
+            get
+            {
+                return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonPrograms), "Reclaim.lnk");
+            }
+        }
+
+        private static void CreateShortcut()
+        {
+            try
+            {
+                Type shellType = Type.GetTypeFromProgID("WScript.Shell");
+                object shell = Activator.CreateInstance(shellType);
+                object link = shellType.InvokeMember("CreateShortcut", BindingFlags.InvokeMethod, null, shell, new object[] { ShortcutPath });
+                Type linkType = link.GetType();
+                linkType.InvokeMember("TargetPath", BindingFlags.SetProperty, null, link,
+                    new object[] { Path.Combine(AppPaths.InstallDir, AppPaths.GuiExeName) });
+                linkType.InvokeMember("WorkingDirectory", BindingFlags.SetProperty, null, link, new object[] { AppPaths.InstallDir });
+                linkType.InvokeMember("Description", BindingFlags.SetProperty, null, link, new object[] { "Reclaim" });
+                linkType.InvokeMember("Save", BindingFlags.InvokeMethod, null, link, null);
+            }
+            catch
+            {
+                // Lối tắt chỉ là tiện ích, không làm hỏng cài đặt.
+            }
+        }
+
+        // ------------------------------------------------------------------ gỡ cài đặt
+
+        public static void Uninstall()
+        {
+            RequireAdmin();
+
+            if (IsServiceInstalled()) StopService();
+
+            // Trả DNS về như cũ khi dịch vụ đã dừng (DataDir còn dns-backup.json).
+            bool dnsRestored;
+            try
+            {
+                var dns = new NetshDnsConfigurator(NullLog.Instance);
+                // nextdns đã dừng: ngoài khôi phục theo bản sao lưu, dọn cả adapter loopback mất bản sao lưu.
+                dnsRestored = dns.ResetAll() & dns.RecoverOrphans(new DnsProbe().IsResolverAnswering);
+            }
+            catch { dnsRestored = false; }
+            if (!dnsRestored)
+            {
+                // Không xóa gì cả: dịch vụ được bật lại (tự áp dụng lại bảo vệ) để máy không mất mạng, giữ nguyên bản sao lưu DNS.
+                try { if (IsServiceInstalled()) StartService(); } catch { }
+                throw new ReclaimException(ErrorCodes.ApplyFailed,
+                    "Không khôi phục được DNS ban đầu của một số adapter nên đã hủy gỡ cài đặt (dịch vụ được bật lại). Hãy thử lại.");
+            }
+
+            if (IsServiceInstalled())
+            {
+                ProcessResult r = ProcessUtil.Run("sc.exe", "delete " + AppPaths.ServiceName, 15000);
+                if (!r.Success)
+                {
+                    throw new ReclaimException(ErrorCodes.Denied, "Không xóa được dịch vụ. Bảo vệ có thể đang bật. " + r.Output);
+                }
+            }
+
+            try { Registry.LocalMachine.DeleteSubKeyTree(UninstallKey, false); } catch { }
+            try { Registry.LocalMachine.DeleteSubKeyTree(@"SOFTWARE\Reclaim", false); } catch { }
+            try { Registry.LocalMachine.DeleteSubKeyTree(SafeBootKey, false); } catch { }
+            try { if (File.Exists(ShortcutPath)) File.Delete(ShortcutPath); } catch { }
+            try { if (Directory.Exists(AppPaths.DataDir)) Directory.Delete(AppPaths.DataDir, true); } catch { }
+
+            ScheduleInstallDirRemoval();
+        }
+
+        /// <summary>
+        /// File của chính ứng dụng đang bị khóa nên xóa bằng một batch chạy nền, thử lại tới ~5 phút
+        /// cho tới khi người dùng đóng cửa sổ Reclaim.
+        /// </summary>
+        private static void ScheduleInstallDirRemoval()
+        {
+            if (!Directory.Exists(AppPaths.InstallDir)) return;
+            string bat = Path.Combine(Path.GetTempPath(), "reclaim-cleanup-" + Guid.NewGuid().ToString("N") + ".bat");
+            string script =
+                "@echo off\r\n" +
+                "for /l %%i in (1,1,150) do (\r\n" +
+                "  rmdir /s /q \"" + AppPaths.InstallDir + "\" 2>nul\r\n" +
+                "  if not exist \"" + AppPaths.InstallDir + "\" goto done\r\n" +
+                "  ping 127.0.0.1 -n 3 >nul\r\n" +
+                ")\r\n" +
+                ":done\r\n" +
+                "del \"%~f0\"\r\n";
+            File.WriteAllText(bat, script);
+            var info = new System.Diagnostics.ProcessStartInfo(bat)
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            System.Diagnostics.Process.Start(info);
+        }
+
+        // ------------------------------------------------------------------ dịch vụ Windows
+
+        private static void StopService()
+        {
+            try
+            {
+                using (var sc = new ServiceController(AppPaths.ServiceName))
+                {
+                    if (sc.Status != ServiceControllerStatus.Stopped)
+                    {
+                        sc.Stop();
+                        sc.WaitForStatus(ServiceControllerStatus.Stopped, TimeSpan.FromSeconds(30));
+                    }
+                }
+            }
+            catch (InvalidOperationException ex)
+            {
+                throw new ReclaimException(ErrorCodes.Denied,
+                    "Không dừng được dịch vụ Reclaim. Bảo vệ có thể đang bật - hãy mở khóa và chọn \"Tạm gỡ bảo vệ\" trong ứng dụng. (" + ex.Message + ")");
+            }
+            catch (System.ServiceProcess.TimeoutException)
+            {
+                throw new ReclaimException(ErrorCodes.Denied, "Dịch vụ Reclaim không dừng kịp.");
+            }
+        }
+
+        private static void StartService()
+        {
+            using (var sc = new ServiceController(AppPaths.ServiceName))
+            {
+                if (sc.Status == ServiceControllerStatus.Running) return;
+                sc.Start();
+                sc.WaitForStatus(ServiceControllerStatus.Running, TimeSpan.FromSeconds(30));
+            }
+        }
+
+        private static void RunSc(string arguments)
+        {
+            ProcessResult r = ProcessUtil.Run("sc.exe", arguments, 20000);
+            if (!r.Success)
+            {
+                throw new ReclaimException(ErrorCodes.Internal, "sc.exe thất bại: " + r.Output);
+            }
+        }
+
+        private static void RequireAdmin()
+        {
+            if (!IsAdmin())
+            {
+                throw new ReclaimException(ErrorCodes.Denied, "Cần quyền quản trị viên.");
+            }
+        }
+
+        private static void CopyTree(string source, string target)
+        {
+            Directory.CreateDirectory(target);
+            foreach (string file in Directory.GetFiles(source))
+            {
+                string ext = Path.GetExtension(file).ToLowerInvariant();
+                if (ext == ".pdb" || ext == ".xml") continue;
+                File.Copy(file, Path.Combine(target, Path.GetFileName(file)), true);
+            }
+            foreach (string dir in Directory.GetDirectories(source))
+            {
+                CopyTree(dir, Path.Combine(target, Path.GetFileName(dir)));
+            }
+        }
+    }
+}

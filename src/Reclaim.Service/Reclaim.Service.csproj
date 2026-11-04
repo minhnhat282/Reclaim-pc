@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <AssemblyName>Reclaim.Service</AssemblyName>
+    <RootNamespace>Reclaim.Service</RootNamespace>
+    <PlatformTarget>x64</PlatformTarget>
+    <Prefer32Bit>false</Prefer32Bit>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="System.ServiceProcess" />
+    <ProjectReference Include="..\Reclaim.Core\Reclaim.Core.csproj" />
+  </ItemGroup>
+
+  <!-- Chép nextdns.exe (nguyên bản) vào <OutDir>\nextdns\ -->
+  <PropertyGroup>
+    <NextDnsSource>$(MSBuildThisFileDirectory)..\..\third_party\nextdns\nextdns.exe</NextDnsSource>
+  </PropertyGroup>
+  <Target Name="CopyNextDns" AfterTargets="Build">
+    <Copy SourceFiles="$(NextDnsSource)" DestinationFolder="$(OutDir)nextdns" Condition="Exists('$(NextDnsSource)')" />
+    <Warning Condition="!Exists('$(NextDnsSource)')"
+             Text="Thiếu third_party\nextdns\nextdns.exe - xem third_party\nextdns\README.txt. Ứng dụng sẽ không cài đặt được nếu thiếu file này." />
+  </Target>
+
+</Project>
