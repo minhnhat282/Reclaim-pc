@@ -11,4 +11,5 @@ Cách 2 - tự build từ mã nguồn (cần Go):
   go build -trimpath -ldflags "-s -w -X main.version=1.49.0" -o nextdns.exe .
 
 Khi build Reclaim, file này được tự chép vào <thư mục build>\nextdns\nextdns.exe.
+Kèm theo file LICENSE (giấy phép MIT) của nextdns vào đây với tên LICENSE.txt; nó được chép cùng nextdns.exe.
 Reclaim KHÔNG sửa nextdns. Nâng cấp = thay file này rồi build/cài đặt lại.
