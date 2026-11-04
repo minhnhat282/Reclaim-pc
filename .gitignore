@@ -1,0 +1,9 @@
+.vs/
+bin/
+obj/
+build/
+*.user
+*.suo
+third_party/nextdns/nextdns.exe
+installer/Output/
+nextdns-dl/
