@@ -4,6 +4,7 @@ using System.Linq;
 using System.Reflection;
 using System.Security.Principal;
 using System.ServiceProcess;
+using System.Threading;
 using Microsoft.Win32;
 using Reclaim.Core.Domain;
 
@@ -55,6 +56,10 @@ namespace Reclaim.Core.Infrastructure
                 throw new ReclaimException(ErrorCodes.BadRequest, "Thiếu Reclaim.exe hoặc Reclaim.Service.exe trong thư mục build.");
             }
 
+            // Lần gỡ cài đặt trước có thể còn một batch dọn dẹp chạy nền (tối đa ~5 phút). Nếu không hủy nó,
+            // nó sẽ xóa chính các file ta sắp chép (chỉ để sót những file đang bị khóa).
+            CancelPendingCleanup();
+
             bool exists = IsServiceInstalled();
             if (exists) StopService();
 
@@ -82,6 +87,8 @@ namespace Reclaim.Core.Infrastructure
                 throw new ReclaimException(ErrorCodes.Denied, "Không sao chép được file (đang được sử dụng?): " + ex.Message);
             }
 
+            VerifyInstalledFiles();
+
             string binPath = "\"" + Path.Combine(AppPaths.InstallDir, AppPaths.ServiceExeName) + "\" --service";
             string quoted = "\"" + binPath.Replace("\"", "\\\"") + "\"";
 
@@ -104,6 +111,50 @@ namespace Reclaim.Core.Infrastructure
             CreateShortcut();
 
             StartService();
+
+            // Chốt lại lần nữa: không báo "thành công" nếu file đã bị xóa mất.
+            VerifyInstalledFiles();
+        }
+
+        private static string CleanupCancelMarker
+        {
+            get { return Path.Combine(AppPaths.DataDir, "install.marker"); }
+        }
+
+        /// <summary>
+        /// Tạo file dấu để batch dọn dẹp của lần gỡ trước tự dừng, rồi chờ một vòng của nó (rmdir đang chạy dở) kết thúc.
+        /// </summary>
+        private static void CancelPendingCleanup()
+        {
+            try
+            {
+                Directory.CreateDirectory(AppPaths.DataDir);
+                File.WriteAllText(CleanupCancelMarker, DateTime.UtcNow.ToString("o"));
+            }
+            catch
+            {
+                // Không ghi được dấu thì vẫn tiếp tục; VerifyInstalledFiles sẽ báo lỗi nếu file bị xóa.
+            }
+            Thread.Sleep(3500);
+        }
+
+        private static void VerifyInstalledFiles()
+        {
+            string[] required =
+            {
+                AppPaths.GuiExeName,
+                AppPaths.ServiceExeName,
+                "Reclaim.Core.dll",
+                Path.Combine("nextdns", "nextdns.exe")
+            };
+            foreach (string relative in required)
+            {
+                if (!File.Exists(Path.Combine(AppPaths.InstallDir, relative)))
+                {
+                    throw new ReclaimException(ErrorCodes.Internal,
+                        "Cài đặt chưa đầy đủ: thiếu " + relative + " trong " + AppPaths.InstallDir + ". Hãy chạy lại trình cài đặt.");
+                }
+            }
         }
 
         private static void WriteUninstallEntry()
@@ -200,15 +251,18 @@ namespace Reclaim.Core.Infrastructure
         private static void ScheduleInstallDirRemoval()
         {
             if (!Directory.Exists(AppPaths.InstallDir)) return;
+            try { if (File.Exists(CleanupCancelMarker)) File.Delete(CleanupCancelMarker); } catch { }
             string bat = Path.Combine(Path.GetTempPath(), "reclaim-cleanup-" + Guid.NewGuid().ToString("N") + ".bat");
             string script =
                 "@echo off\r\n" +
                 "for /l %%i in (1,1,150) do (\r\n" +
+                "  if exist \"" + CleanupCancelMarker + "\" goto cancelled\r\n" +
                 "  rmdir /s /q \"" + AppPaths.InstallDir + "\" 2>nul\r\n" +
                 "  if not exist \"" + AppPaths.InstallDir + "\" goto done\r\n" +
                 "  ping 127.0.0.1 -n 3 >nul\r\n" +
                 ")\r\n" +
                 ":done\r\n" +
+                ":cancelled\r\n" +
                 "del \"%~f0\"\r\n";
             File.WriteAllText(bat, script);
             var info = new System.Diagnostics.ProcessStartInfo(bat)
