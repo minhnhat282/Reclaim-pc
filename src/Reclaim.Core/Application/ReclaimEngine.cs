@@ -53,6 +53,10 @@ namespace Reclaim.Core.Application
         private DateTime _nextGuardUtc = DateTime.MinValue;
         private int _noResponseStreak;
 
+        // Khởi động: nextdns chạy trước, DNS hệ thống chỉ được chuyển sang nextdns SAU khi nó trả lời được (hoặc hết StartupTimeout).
+        private readonly ManualResetEventSlim _startupDone = new ManualResetEventSlim(true);
+        private int _generation; // tăng mỗi lần người dùng áp dụng cài đặt: hủy phần "hoàn tất khởi động" đang chờ
+
         // Bộ đếm chẩn đoán (dưới _watchLock), được ghi ra nhật ký thành một dòng tóm tắt định kỳ.
         private DateTime _nextSummaryUtc = DateTime.MinValue;
         private int _cProbeOk, _cProbeDnsError, _cProbeNoResponse;
@@ -108,16 +112,18 @@ namespace Reclaim.Core.Application
             try
             {
                 EnsureBinaryTrusted();
+                int generation = Volatile.Read(ref _generation);
                 lock (_lifecycle)
                 {
                     if (_stopped) return; // dịch vụ đã nhận lệnh dừng trong lúc khởi động
                     _runner.Start(s.ProfileId);
-                    lock (_gate) { _enforce = true; }
-                    ResetWatchdog();
-                    RouteDns();
                 }
-                EnsureGuardIfDue(true);
-                _log.Info("Đã khởi động bảo vệ DNS.");
+                // Không trỏ DNS về nextdns ngay: nextdns khởi động nguội mất ~5-16 giây mới trả lời được, và trong lúc đó DNS
+                // của máy sẽ chết. Chờ ở luồng nền để dịch vụ báo "đang chạy" ngay.
+                _startupDone.Reset();
+                var starter = new Thread(() => FinishStartup(generation)) { IsBackground = true, Name = "reclaim-startup" };
+                starter.Start();
+                _log.Info("Đã khởi động nextdns; chờ nó sẵn sàng rồi mới chuyển DNS hệ thống.");
             }
             catch (ReclaimException ex)
             {
@@ -127,6 +133,49 @@ namespace Reclaim.Core.Application
             {
                 _log.Error("Start: " + ex);
                 SetError("Không khởi động được nextdns.");
+            }
+        }
+
+        /// <summary>Chờ phần hoàn tất khởi động (chuyển DNS, áp chặn đường vòng) xong. Dùng cho unit test.</summary>
+        public bool WaitForStartup(int timeoutMs)
+        {
+            return _startupDone.Wait(timeoutMs);
+        }
+
+        private void FinishStartup(int generation)
+        {
+            try
+            {
+                DateTime deadline = DateTime.UtcNow + _opt.StartupTimeout;
+                bool ready = false;
+                while (!_stopped && DateTime.UtcNow < deadline)
+                {
+                    int rcode = _probe.QueryRcode(_opt.ProbeTimeoutMs);
+                    if (rcode == 0 || rcode == 3) { ready = true; break; }
+                    Thread.Sleep(_opt.PollSleepMs);
+                }
+
+                lock (_lifecycle)
+                {
+                    // Người dùng đã áp dụng cài đặt mới (hoặc dịch vụ đang dừng) trong lúc chờ: để luồng đó tự lo.
+                    if (_stopped || generation != Volatile.Read(ref _generation)) return;
+                    lock (_gate) { _enforce = true; }
+                    ResetWatchdog();
+                    RouteDns();
+                }
+                EnsureGuardIfDue(true);
+                // Hết thời gian chờ mà nextdns vẫn chưa trả lời: vẫn chuyển DNS (fail-closed, đúng chủ ý); watchdog sẽ báo nguyên nhân.
+                _log.Info(ready
+                    ? "nextdns sẵn sàng: đã chuyển DNS hệ thống sang nextdns."
+                    : "nextdns chưa sẵn sàng sau " + (int)_opt.StartupTimeout.TotalSeconds + " giây: vẫn chuyển DNS sang nextdns (fail-closed).");
+            }
+            catch (Exception ex)
+            {
+                _log.Error("FinishStartup: " + ex);
+            }
+            finally
+            {
+                _startupDone.Set();
             }
         }
 
@@ -252,6 +301,7 @@ namespace Reclaim.Core.Application
             lock (_applyLock)
             {
                 if (_stopped) throw new ReclaimException(ErrorCodes.Unavailable, "Dịch vụ đang dừng.");
+                Interlocked.Increment(ref _generation); // hủy phần "hoàn tất khởi động" đang chờ (nếu có)
                 AppSettings before;
                 lock (_gate)
                 {

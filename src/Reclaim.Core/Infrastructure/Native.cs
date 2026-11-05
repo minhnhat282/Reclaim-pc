@@ -32,6 +32,21 @@ namespace Reclaim.Core.Infrastructure
         [DllImport("kernel32.dll")]
         public static extern IntPtr LocalFree(IntPtr memory);
 
+        public const uint PIPE_ACCESS_DUPLEX = 0x00000003;
+        public const uint FILE_FLAG_FIRST_PIPE_INSTANCE = 0x00080000;
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct SECURITY_ATTRIBUTES
+        {
+            public int nLength;
+            public IntPtr lpSecurityDescriptor;
+            [MarshalAs(UnmanagedType.Bool)] public bool bInheritHandle;
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        public static extern IntPtr CreateNamedPipe(string name, uint openMode, uint pipeMode, uint maxInstances,
+            uint outBufferSize, uint inBufferSize, uint defaultTimeOut, ref SECURITY_ATTRIBUTES securityAttributes);
+
         public const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
 
         [DllImport("kernel32.dll", SetLastError = true)]

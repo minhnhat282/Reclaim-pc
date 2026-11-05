@@ -10,6 +10,9 @@ namespace Reclaim.Core.Application
         public int ProbeTimeoutMs = 7000;
         public int PollSleepMs = 300;
 
+        // Lúc khởi động dịch vụ: chờ tối đa chừng này cho nextdns trả lời rồi mới chuyển DNS (quá hạn vẫn chuyển: fail-closed).
+        public TimeSpan StartupTimeout = TimeSpan.FromSeconds(60);
+
         // Watchdog trong Tick: khi khỏe thì kiểm tra thưa, khi lỗi thì kiểm tra dày hơn.
         public TimeSpan WatchdogInterval = TimeSpan.FromSeconds(30);
         public TimeSpan WatchdogRetryInterval = TimeSpan.FromSeconds(5);

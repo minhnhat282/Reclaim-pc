@@ -27,7 +27,7 @@ Nhật ký: `C:\ProgramData\Reclaim\reclaim.log`; nextdns ghi vào Event Viewer 
 Cách nhanh: cài **Inno Setup 6** (miễn phí, https://jrsoftware.org/isdl.php), đặt `nextdns.exe` vào `third_party\nextdns\`,
 rồi bấm đúp **`make-installer.bat`** -> được `installer\Output\ReclaimSetup.exe`.
 Máy đích: Windows 10/11 64-bit có .NET Framework 4.8 (Windows 10 từ bản 1903 và Windows 11 đã có sẵn).
-Cài im lặng: `ReclaimSetup.exe /VERYSILENT`. Gỡ cài đặt: Apps & features -> Reclaim (hỏi mật khẩu nếu đang bật bảo vệ).
+Cài im lặng: `ReclaimSetup.exe /VERYSILENT`. Gỡ cài đặt: chỉ qua Apps & features -> Reclaim (hỏi mật khẩu nếu đang bật bảo vệ); giao diện ứng dụng không còn nút gỡ cài đặt.
 Không dùng Inno Setup: chép nguyên thư mục `build\Release` sang máy khác, chạy `Reclaim.exe` -> "Cài đặt Reclaim".
 
 ## Kiến trúc
@@ -101,11 +101,12 @@ Nếu không áp dụng được (ví dụ tường lửa Windows bị tắt/h�
 - `detect-captive-portals` tắt: không đăng nhập được Wi-Fi công cộng cần trang đăng nhập khi đang bật bảo vệ (tắt bảo vệ tạm để đăng nhập).
 - Dừng dịch vụ chủ động (bảo trì/gỡ) sẽ trả DNS về ban đầu (khôi phục cả DNS tĩnh đã lưu trong `dns-backup.json`); tắt máy thì giữ nguyên.
 - **IPv6:** DNS IPv6 của adapter trỏ về `::1` và nextdns nghe cả `127.0.0.1:53` lẫn `[::1]:53` (hai dòng `listen`, đã kiểm chứng trên nextdns 1.49.0), nên `nslookup` không đối số cũng chạy. Nếu máy không bind được `::1` thì chỉ nghe IPv4.
+- **Khởi động dịch vụ:** nextdns chạy trước, DNS hệ thống chỉ được chuyển sang nextdns SAU khi nó trả lời được (tối đa chờ 60 giây rồi vẫn chuyển, đúng fail-closed). Nhờ vậy khởi động lại dịch vụ (nâng cấp, bật lại) không còn khoảng mất DNS 5-16 giây. Nếu người dùng áp dụng cài đặt trong lúc đó thì phần chờ tự hủy.
 - **Đổi ID khi đang bảo vệ:** ID mới được thử bằng một nextdns tạm ở cổng khác trước; ID sai bị từ chối mà nextdns đang chạy và DNS của máy không bị đụng tới.
 - **Giám sát sức khỏe (mỗi 3 giây một vòng Tick, probe thưa 30 giây/lần khi khỏe):** nextdns sống nhưng NextDNS không với tới được thì **không** khởi động lại (không giúp được gì), chỉ báo lỗi sau 45 giây. nextdns không trả lời gì 3 lần liên tiếp, kéo dài đủ lâu, máy đang có mạng và cách lần khởi động lại trước 3 phút thì mới được khởi động lại (có kiểm tra mã băm). Dòng lỗi cuối của nextdns được đưa lên giao diện (ví dụ cổng 53 bị chiếm).
 - **Khi nextdns không chạy được** (antivirus cách ly, mã băm đổi, cổng 53 bận): vẫn là fail-closed, không tự trả DNS; giao diện báo nguyên nhân. Cách thoát: mở khóa -> tắt bảo vệ (trả DNS) rồi xử lý nguyên nhân.
 - **Đặt mật khẩu lần đầu cần quyền quản trị:** nút "Đặt mật khẩu" mở lại `Reclaim.exe /setpassword` có UAC (tài khoản thường sẽ được hỏi mật khẩu admin); dịch vụ từ chối nếu người gọi không phải quản trị viên, để tài khoản thường không đặt mật khẩu trước chủ máy. Xong phải bấm "Mở khóa" một lần.
-- **Giao diện xác minh dịch vụ trước khi gửi mật khẩu:** tiến trình giữ pipe phải là `Reclaim.Service.exe` đã cài; dịch vụ tạo pipe với `FirstPipeInstance` để không ai chiếm tên trước. Lỗi liên lạc được phân loại (chưa chạy / không xác minh được / quá thời gian / đứt kết nối) thay vì luôn báo "dịch vụ chưa chạy".
+- **Giao diện xác minh dịch vụ trước khi gửi mật khẩu:** tiến trình giữ pipe phải là `Reclaim.Service.exe` đã cài; dịch vụ tạo cá thể pipe đầu tiên bằng `CreateNamedPipe` với `FILE_FLAG_FIRST_PIPE_INSTANCE` (.NET Framework 4.8 từ chối cờ này qua `PipeOptions`, nên gọi thẳng Win32) để không ai chiếm tên trước; nếu tên đã bị chiếm, dịch vụ ghi lỗi và thử lại mỗi 2 giây. Lỗi liên lạc được phân loại (chưa chạy / không xác minh được / quá thời gian / đứt kết nối) thay vì luôn báo "dịch vụ chưa chạy".
 - **Nâng cấp có hoàn tác:** cài đè sao lưu bản cũ sang `Reclaim.backup` trước; nếu chép/đăng ký/khởi động dịch vụ lỗi thì khôi phục bản cũ và bật lại dịch vụ.
 - Reclaim không có telemetry; chỉ gọi mạng qua nextdns (và một truy vấn DNS thử khi áp dụng cấu hình).
 
@@ -132,7 +133,7 @@ Chạy: `dotnet test src/Reclaim.Tests -c Release` (Windows). Workflow có job `
 
 Workflow `.github/workflows/build.yml` chạy trên `windows-latest`: tải `nextdns.exe` bản phát hành chính thức (phiên bản đặt ở `NEXTDNS_VERSION` trong file workflow), build Release, tạo `ReclaimSetup.exe` bằng Inno Setup và đưa lên mục **Artifacts** của lần chạy.
 
-- **Ghim hash (khuyến nghị):** lần chạy đầu, SHA-256 của `nextdns.exe` hiện ở phần Summary của lần chạy. Chép giá trị đó (một dòng) vào `third_party/nextdns/nextdns.sha256` và commit; từ đó build sẽ dừng nếu file tải về không khớp.
+- **Ghim hash:** `third_party/nextdns/nextdns.sha256` (một dòng SHA-256 của `nextdns.exe`) đã có; build dừng nếu file tải về không khớp. Khi nâng cấp nextdns: đổi `NEXTDNS_VERSION` trong workflow, chạy lại để lấy hash mới ở phần Summary rồi cập nhật file này.
 - **Tạo bản phát hành:** đẩy tag dạng `v1.0.1` thì workflow tự tạo GitHub Release kèm `ReclaimSetup.exe`.
 - Muốn dùng `nextdns.exe` của riêng bạn: bỏ nó vào `third_party/nextdns/` (đã nằm trong `.gitignore`, nên cần `git add -f`) và workflow sẽ không tải nữa.
 - File cài đặt chưa được ký số nên Windows SmartScreen có thể cảnh báo.

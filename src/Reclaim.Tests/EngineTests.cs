@@ -194,10 +194,55 @@ namespace Reclaim.Tests
             var rig = new Rig(configure: s => { s.Enabled = true; s.ProfileId = "abc123"; });
 
             rig.Engine.Start();
+            Assert.True(rig.Engine.WaitForStartup(3000));
 
             Assert.Equal(new[] { "abc123" }, rig.Runner.Starts.ToArray());
             Assert.True(rig.Engine.GetState(null).Enforcing);
             Assert.Contains("guard.ensure", rig.Events);
+        }
+
+        [Fact]
+        public void Start_DoesNotMoveDnsUntilNextDnsAnswers()
+        {
+            var rig = new Rig(rcode: -1, configure: s => { s.Enabled = true; s.ProfileId = "abc123"; });
+
+            rig.Engine.Start();
+            System.Threading.Thread.Sleep(100);
+
+            // nextdns chưa trả lời: DNS của máy chưa bị đụng tới (tránh mất DNS vài giây lúc khởi động lại dịch vụ)
+            Assert.Equal(0, rig.Dns.RouteCalls);
+            Assert.False(rig.Engine.GetState(null).Enforcing);
+
+            rig.Probe.Rcode = 3;
+            Assert.True(rig.Engine.WaitForStartup(3000));
+            Assert.True(rig.Dns.RouteCalls > 0);
+            Assert.True(rig.Engine.GetState(null).Enforcing);
+            Assert.Contains("guard.ensure", rig.Events);
+        }
+
+        [Fact]
+        public void Start_MovesDnsAnywayAfterTimeout_FailClosed()
+        {
+            var rig = new Rig(rcode: -1, configure: s => { s.Enabled = true; s.ProfileId = "abc123"; });
+
+            rig.Engine.Start();
+            Assert.True(rig.Engine.WaitForStartup(3000));
+
+            Assert.True(rig.Dns.RouteCalls > 0);
+            Assert.True(rig.Engine.GetState(null).Enforcing);
+        }
+
+        [Fact]
+        public void Start_PendingStartupIsCancelledWhenUserDisables()
+        {
+            var rig = new Rig(rcode: -1, configure: s => { s.Enabled = true; s.ProfileId = "abc123"; });
+            rig.Engine.Start();
+
+            rig.Engine.SaveSettings(null, "abc123", false); // người dùng tắt trong lúc nextdns còn đang khởi động
+            Assert.True(rig.Engine.WaitForStartup(3000));
+
+            Assert.False(rig.Engine.GetState(null).Enforcing); // luồng khởi động không được bật lại bảo vệ
+            Assert.False(rig.Store.Current.Enabled);
         }
 
         [Fact]

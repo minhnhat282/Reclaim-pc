@@ -25,14 +25,23 @@ namespace Reclaim.Desktop
         private bool _polling;
         private bool _updating;   // đang gán giá trị từ dịch vụ vào ô nhập (không phải người dùng sửa)
 
+        private bool _placing;    // đang tự đặt vị trí (không tính là người dùng kéo cửa sổ)
+        private bool _userMoved;  // người dùng đã kéo cửa sổ: thôi tự căn giữa
+
         public MainWindow()
         {
             InitializeComponent();
+            // Không cao hơn vùng làm việc (màn hình trừ taskbar): quá thì ScrollViewer cho cuộn.
+            MaxHeight = SystemParameters.WorkArea.Height;
             Loaded += async delegate
             {
+                PlaceOnScreen();
                 await RefreshAsync();
                 _timer.Start();
             };
+            // Kích thước đổi (khi nạp xong trạng thái, hiện/ẩn thông báo...): căn giữa lại cho tới khi người dùng tự kéo.
+            SizeChanged += delegate { if (IsLoaded && !_userMoved) PlaceOnScreen(); };
+            LocationChanged += delegate { if (IsLoaded && !_placing) _userMoved = true; };
             _timer.Tick += async delegate
             {
                 if (!_busy) await RefreshAsync();
@@ -40,6 +49,25 @@ namespace Reclaim.Desktop
             DataObject.AddPastingHandler(ProfileBox, OnProfilePaste);
             Closing += OnClosing;
             Closed += delegate { Application.Current.Shutdown(); };
+        }
+
+        /// <summary>Căn giữa trong vùng làm việc của màn hình chính (CenterScreen tính cả taskbar nên che mất phần dưới).</summary>
+        private void PlaceOnScreen()
+        {
+            Rect area = SystemParameters.WorkArea;
+            double width = ActualWidth;
+            double height = ActualHeight;
+            if (width <= 0 || height <= 0) return;
+            _placing = true;
+            try
+            {
+                Left = area.Left + Math.Max(0, (area.Width - width) / 2);
+                Top = area.Top + Math.Max(0, (area.Height - height) / 2);
+            }
+            finally
+            {
+                _placing = false;
+            }
         }
 
         private void OnClosing(object sender, CancelEventArgs e)
@@ -455,20 +483,6 @@ namespace Reclaim.Desktop
             }
             await Task.Delay(1500); // chờ dịch vụ mở pipe
             await RefreshAsync();
-        }
-
-        private async void Uninstall_Click(object sender, MouseButtonEventArgs e)
-        {
-            _timer.Stop();
-            int code = await UninstallFlow.RunAsync(this, _client);
-            if (code == 0)
-            {
-                Application.Current.Shutdown();
-            }
-            else
-            {
-                _timer.Start();
-            }
         }
     }
 }

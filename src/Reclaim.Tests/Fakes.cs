@@ -158,6 +158,7 @@ namespace Reclaim.Tests
             return new EngineOptions
             {
                 HealthTimeout = TimeSpan.FromMilliseconds(300),
+                StartupTimeout = TimeSpan.FromMilliseconds(300),
                 ProbeTimeoutMs = 10,
                 PollSleepMs = 5,
                 WatchdogInterval = TimeSpan.Zero,

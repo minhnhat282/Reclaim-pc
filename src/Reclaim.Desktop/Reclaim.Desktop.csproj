@@ -9,7 +9,12 @@
     <PlatformTarget>x64</PlatformTarget>
     <Prefer32Bit>false</Prefer32Bit>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\Reclaim.ico</ApplicationIcon>
   </PropertyGroup>
+
+  <ItemGroup>
+    <Resource Include="Assets\Reclaim.ico" />
+  </ItemGroup>
 
   <ItemGroup>
     <Reference Include="System.ServiceProcess" />

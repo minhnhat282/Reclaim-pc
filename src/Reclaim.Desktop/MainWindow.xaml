@@ -2,9 +2,12 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Reclaim" Width="440" SizeToContent="Height" ResizeMode="CanMinimize"
-        WindowStartupLocation="CenterScreen"
+        Icon="Assets/Reclaim.ico" WindowStartupLocation="Manual"
         Background="{DynamicResource Bg}" TextElement.Foreground="{DynamicResource Text}"
         FontFamily="Segoe UI Variable Text, Segoe UI" FontSize="14" UseLayoutRounding="True">
+    <!-- ScrollViewer: màn hình thấp thì cuộn được thay vì bị thanh taskbar che mất phần dưới. Chiều cao cửa sổ bị giới hạn
+         bằng vùng làm việc (không tính taskbar) trong MainWindow.xaml.cs. -->
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
     <StackPanel Margin="24,20,24,20">
 
         <!-- Đầu trang -->
@@ -88,10 +91,7 @@
             </Border>
 
             <TextBlock x:Name="MessageText" TextWrapping="Wrap" Margin="2,0,2,10" Visibility="Collapsed"/>
-
-            <TextBlock Text="Gỡ cài đặt Reclaim" Foreground="{DynamicResource SubText}" FontSize="12.5"
-                       TextDecorations="Underline" Cursor="Hand" HorizontalAlignment="Center"
-                       MouseLeftButtonUp="Uninstall_Click"/>
         </StackPanel>
     </StackPanel>
+    </ScrollViewer>
 </Window>

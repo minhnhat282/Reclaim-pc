@@ -23,6 +23,7 @@ OutputBaseFilename=ReclaimSetup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
+SetupIconFile=..\src\Reclaim.Desktop\Assets\Reclaim.ico
 
 [Messages]
 WelcomeLabel1=Cài đặt Reclaim
