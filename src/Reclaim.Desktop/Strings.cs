@@ -27,6 +27,12 @@ namespace Reclaim.Desktop
         public const string ServiceNotInstalled = "Reclaim chưa được cài đặt trên máy này.";
         public const string ServiceNotRunning = "Dịch vụ Reclaim chưa chạy. Hãy khởi động lại máy hoặc cài đặt lại.";
 
+        public const string ServiceUntrusted =
+            "Tiến trình đang giữ kênh liên lạc không phải dịch vụ Reclaim đã cài nên ứng dụng không gửi thông tin tới nó. " +
+            "Hãy khởi động lại máy hoặc cài đặt lại Reclaim.";
+        public const string ServiceCommError = "Không liên lạc được với dịch vụ Reclaim.";
+        public const string PasswordCreated = "Đã đặt mật khẩu. Hãy chọn \"Mở khóa\" để tiếp tục thay đổi cài đặt.";
+
         public const string ConfirmUninstall = "Gỡ cài đặt Reclaim? DNS của máy sẽ được trả về như ban đầu.";
         public const string Uninstalled = "Đã gỡ cài đặt Reclaim.";
 

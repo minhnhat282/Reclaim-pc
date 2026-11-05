@@ -39,6 +39,8 @@ namespace Reclaim.Core.Hosting
                 runner,
                 new DnsProbe(),
                 new WindowsProtectionHardener(_log),
+                new WindowsBypassGuard(_log),
+                new NextDnsProfileVerifier(AppPaths.NextDnsExe, Path.Combine(AppPaths.DataDir, "verify.conf"), _log),
                 _log);
 
             _pipe = new PipeServer(new RequestRouter(_engine, _log).Handle, _log);

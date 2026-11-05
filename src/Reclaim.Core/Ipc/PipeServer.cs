@@ -20,12 +20,14 @@ namespace Reclaim.Core.Ipc
         private const int MaxInstances = 16;
         private const int IoTimeoutMs = 5000;
 
-        private readonly Func<Request, Response> _handler;
+        private readonly Func<Request, bool, Response> _handler;
+        private bool _firstInstance = true; // chỉ luồng AcceptLoop đọc/ghi
         private readonly ILog _log;
         private volatile bool _stopped;
         private Thread _thread;
 
-        public PipeServer(Func<Request, Response> handler, ILog log)
+        /// <param name="handler">(yêu cầu, người gọi có quyền quản trị không) -> phản hồi. Quyền quản trị chỉ được xác định cho SetPassword.</param>
+        public PipeServer(Func<Request, bool, Response> handler, ILog log)
         {
             _handler = handler;
             _log = log;
@@ -64,8 +66,12 @@ namespace Reclaim.Core.Ipc
                 NamedPipeServerStream stream = null;
                 try
                 {
+                    // Cá thể đầu tiên dùng FirstPipeInstance: nếu một tiến trình khác đã chiếm tên pipe trước (giả mạo dịch vụ
+                    // để nhận mật khẩu), việc tạo pipe thất bại thay vì âm thầm cùng dùng chung tên.
+                    PipeOptions options = _firstInstance ? PipeOptions.FirstPipeInstance : PipeOptions.None;
                     stream = new NamedPipeServerStream(AppPaths.PipeName, PipeDirection.InOut, MaxInstances,
-                        PipeTransmissionMode.Byte, PipeOptions.None, 4096, 4096, security);
+                        PipeTransmissionMode.Byte, options, 4096, 4096, security);
+                    _firstInstance = false;
                     stream.WaitForConnection();
                     NamedPipeServerStream connection = stream;
                     stream = null;
@@ -76,9 +82,30 @@ namespace Reclaim.Core.Ipc
                     if (stream != null) stream.Dispose();
                     if (_stopped) return;
                     _log.Warn("Pipe: " + ex.Message);
-                    Thread.Sleep(500);
+                    Thread.Sleep(_firstInstance ? 2000 : 500);
                 }
             }
+        }
+
+        /// <summary>Phải gọi sau khi đã đọc dữ liệu từ máy khách (yêu cầu của ImpersonateNamedPipeClient).</summary>
+        private static bool IsClientAdmin(NamedPipeServerStream stream)
+        {
+            bool admin = false;
+            try
+            {
+                stream.RunAsClient(delegate
+                {
+                    using (WindowsIdentity identity = WindowsIdentity.GetCurrent())
+                    {
+                        admin = new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
+                    }
+                });
+            }
+            catch (Exception)
+            {
+                admin = false;
+            }
+            return admin;
         }
 
         private void Serve(NamedPipeServerStream stream)
@@ -98,7 +125,9 @@ namespace Reclaim.Core.Ipc
                     watchdog.Dispose();
                 }
 
-                Response response = _handler(request);
+                // Chỉ SetPassword cần biết người gọi có phải quản trị viên (token đã nâng quyền) hay không.
+                bool callerIsAdmin = request != null && request.Op == Ops.SetPassword && IsClientAdmin(stream);
+                Response response = _handler(request, callerIsAdmin);
 
                 // Máy khách không chịu đọc phản hồi cũng không được giữ kết nối quá IoTimeoutMs.
                 var writeWatchdog = new Timer(delegate { try { stream.Dispose(); } catch { } }, null, IoTimeoutMs, Timeout.Infinite);

@@ -1,5 +1,6 @@
 using System;
 using System.Net;
+using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Text;
 using Reclaim.Core.Application;
@@ -16,14 +17,14 @@ namespace Reclaim.Core.Infrastructure
         /// <summary>NOERROR hoặc NXDOMAIN: chuỗi nextdns -> NextDNS hoạt động. SERVFAIL/không trả lời: lỗi (ví dụ ID sai, mất mạng).</summary>
         public bool IsResolverHealthy()
         {
-            int rcode = Query(2500);
+            int rcode = Query(new IPEndPoint(IPAddress.Loopback, 53), 2500);
             return rcode == 0 || rcode == 3;
         }
 
         /// <summary>Có BẤT KỲ bộ phân giải nào trả lời ở 127.0.0.1:53 (kể cả trả lỗi) hay không.</summary>
         public bool IsResolverAnswering()
         {
-            return Query(2500) >= 0;
+            return Query(new IPEndPoint(IPAddress.Loopback, 53), 2500) >= 0;
         }
 
         /// <summary>
@@ -32,11 +33,23 @@ namespace Reclaim.Core.Infrastructure
         /// </summary>
         public int QueryRcode(int timeoutMs)
         {
-            return Query(timeoutMs);
+            return Query(new IPEndPoint(IPAddress.Loopback, 53), timeoutMs);
+        }
+
+        /// <summary>Như QueryRcode nhưng gửi tới một cổng khác (dùng để thử nextdns tạm mà không đụng tới nextdns đang chạy).</summary>
+        public int QueryRcode(IPEndPoint endpoint, int timeoutMs)
+        {
+            return Query(endpoint, timeoutMs);
+        }
+
+        public bool IsNetworkAvailable()
+        {
+            try { return NetworkInterface.GetIsNetworkAvailable(); }
+            catch { return true; } // không biết thì coi như có mạng (không được lấy cớ này để bỏ qua lỗi)
         }
 
         /// <returns>RCODE của phản hồi, hoặc -1 nếu không có phản hồi hợp lệ.</returns>
-        private static int Query(int timeoutMs)
+        private static int Query(IPEndPoint endpoint, int timeoutMs)
         {
             try
             {
@@ -50,7 +63,7 @@ namespace Reclaim.Core.Infrastructure
                 {
                     socket.ReceiveTimeout = timeoutMs;
                     socket.SendTimeout = 2500;
-                    socket.Connect(new IPEndPoint(IPAddress.Loopback, 53));
+                    socket.Connect(endpoint);
                     socket.Send(query);
                     byte[] buffer = new byte[512];
                     int n = socket.Receive(buffer);

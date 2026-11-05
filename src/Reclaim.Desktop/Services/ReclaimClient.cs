@@ -15,14 +15,14 @@ namespace Reclaim.Desktop.Services
 
         public async Task<StateDto> GetStateAsync()
         {
-            Response r = await CallAsync(new Request { Op = Ops.GetState }).ConfigureAwait(false);
+            Response r = await CallAsync(new Request { Op = Ops.GetState }, 10000).ConfigureAwait(false);
             if (r.State != null && !r.State.Unlocked) Token = null;
             return r.State;
         }
 
         public async Task UnlockAsync(string password)
         {
-            Response r = await CallAsync(new Request { Op = Ops.Unlock, Password = password }).ConfigureAwait(false);
+            Response r = await CallAsync(new Request { Op = Ops.Unlock, Password = password }, 30000).ConfigureAwait(false);
             Token = r.Token;
         }
 
@@ -34,37 +34,37 @@ namespace Reclaim.Desktop.Services
 
         public async Task SetPasswordAsync(string newPassword)
         {
-            Response r = await CallAsync(new Request { Op = Ops.SetPassword, NewPassword = newPassword }).ConfigureAwait(false);
+            Response r = await CallAsync(new Request { Op = Ops.SetPassword, NewPassword = newPassword }, 30000).ConfigureAwait(false);
             Token = r.Token;
         }
 
         public async Task ChangePasswordAsync(string oldPassword, string newPassword)
         {
-            Response r = await CallAsync(new Request { Op = Ops.ChangePassword, Password = oldPassword, NewPassword = newPassword }).ConfigureAwait(false);
+            Response r = await CallAsync(new Request { Op = Ops.ChangePassword, Password = oldPassword, NewPassword = newPassword }, 30000).ConfigureAwait(false);
             Token = r.Token;
         }
 
         public async Task RemovePasswordAsync(string password)
         {
-            await CallAsync(new Request { Op = Ops.RemovePassword, Password = password }).ConfigureAwait(false);
+            await CallAsync(new Request { Op = Ops.RemovePassword, Password = password }, 60000).ConfigureAwait(false);
             Token = null;
         }
 
         public async Task<StateDto> SaveAsync(string profileId, bool enabled)
         {
-            Response r = await CallAsync(new Request { Op = Ops.Save, ProfileId = profileId, Enabled = enabled }).ConfigureAwait(false);
+            Response r = await CallAsync(new Request { Op = Ops.Save, ProfileId = profileId, Enabled = enabled }, 180000).ConfigureAwait(false);
             return r.State;
         }
 
         public async Task<StateDto> SetProtectionAsync(ProtectionOptions options)
         {
-            Response r = await CallAsync(new Request { Op = Ops.SetProtection, Protection = options }).ConfigureAwait(false);
+            Response r = await CallAsync(new Request { Op = Ops.SetProtection, Protection = options }, 60000).ConfigureAwait(false);
             return r.State;
         }
 
         public async Task BeginMaintenanceAsync()
         {
-            await CallAsync(new Request { Op = Ops.Maintenance }).ConfigureAwait(false);
+            await CallAsync(new Request { Op = Ops.Maintenance }, 60000).ConfigureAwait(false);
         }
 
         public async Task<string[]> GetLogAsync()
@@ -82,10 +82,10 @@ namespace Reclaim.Desktop.Services
             Token = null;
         }
 
-        private async Task<Response> CallAsync(Request request)
+        private async Task<Response> CallAsync(Request request, int timeoutMs = PipeClient.DefaultTimeoutMs)
         {
             request.Token = Token;
-            Response response = await Task.Run(() => PipeClient.Send(request)).ConfigureAwait(false);
+            Response response = await Task.Run(() => PipeClient.Send(request, timeoutMs)).ConfigureAwait(false);
             if (!response.Ok)
             {
                 if (response.Code == ErrorCodes.NeedUnlock) Token = null;

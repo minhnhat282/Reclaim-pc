@@ -19,6 +19,10 @@ namespace Reclaim.Core.Domain
         public const string MissingBinary = "missing_binary";
         public const string BinaryChanged = "binary_changed";
         public const string Cancelled = "cancelled";
+        public const string Timeout = "timeout";
+        public const string BadServer = "bad_server";
+        public const string Protocol = "protocol";
+        public const string ConnectionLost = "connection_lost";
     }
 
     /// <summary>Lỗi nghiệp vụ có mã lỗi; thông điệp an toàn để hiển thị cho người dùng.</summary>

@@ -63,57 +63,111 @@ namespace Reclaim.Core.Infrastructure
             bool exists = IsServiceInstalled();
             if (exists) StopService();
 
+            // Nâng cấp có hoàn tác: sao lưu bản đang cài, chép bản mới, kiểm tra; bất kỳ bước nào lỗi (kể cả dịch vụ
+            // không khởi động được) thì khôi phục bản cũ rồi bật lại dịch vụ. Cài mới (chưa có bản cũ) thì không có gì để hoàn tác.
+            string backupDir = AppPaths.InstallDir + ".backup";
+            bool backedUp = false;
             try
             {
-                if (!string.Equals(sourceDir, AppPaths.InstallDir, StringComparison.OrdinalIgnoreCase))
+                try
                 {
-                    CopyTree(sourceDir, AppPaths.InstallDir);
+                    if (!string.Equals(sourceDir, AppPaths.InstallDir, StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (File.Exists(Path.Combine(AppPaths.InstallDir, AppPaths.ServiceExeName)))
+                        {
+                            DeleteDirectoryQuietly(backupDir);
+                            CopyTree(AppPaths.InstallDir, backupDir);
+                            backedUp = true;
+                        }
+                        CopyTree(sourceDir, AppPaths.InstallDir);
+                    }
+                    Directory.CreateDirectory(AppPaths.DataDir);
+
+                    // Bản nextdns mới có thể khác: để dịch vụ ghi nhận lại mã băm ở lần chạy đầu.
+                    var store = new JsonSettingsStore(AppPaths.SettingsFile, NullLog.Instance);
+                    AppSettings settings = store.Load();
+                    settings.NextDnsSha256 = string.Empty;
+                    store.Save(settings);
                 }
-                Directory.CreateDirectory(AppPaths.DataDir);
+                catch (UnauthorizedAccessException)
+                {
+                    throw new ReclaimException(ErrorCodes.Denied,
+                        "Không ghi được vào thư mục cài đặt. Nếu đang bật tự bảo vệ, hãy dùng \"Tạm gỡ bảo vệ\" trong ứng dụng trước.");
+                }
+                catch (IOException ex)
+                {
+                    throw new ReclaimException(ErrorCodes.Denied, "Không sao chép được file (đang được sử dụng?): " + ex.Message);
+                }
 
-                // Bản nextdns mới có thể khác: để dịch vụ ghi nhận lại mã băm ở lần chạy đầu.
-                var store = new JsonSettingsStore(AppPaths.SettingsFile, NullLog.Instance);
-                AppSettings settings = store.Load();
-                settings.NextDnsSha256 = string.Empty;
-                store.Save(settings);
+                VerifyInstalledFiles();
+
+                string binPath = "\"" + Path.Combine(AppPaths.InstallDir, AppPaths.ServiceExeName) + "\" --service";
+                string quoted = "\"" + binPath.Replace("\"", "\\\"") + "\"";
+
+                if (!exists)
+                {
+                    RunSc("create " + AppPaths.ServiceName + " binPath= " + quoted + " start= auto obj= LocalSystem DisplayName= \"Reclaim\"");
+                }
+                else
+                {
+                    RunSc("config " + AppPaths.ServiceName + " binPath= " + quoted + " start= auto");
+                }
+                RunSc("description " + AppPaths.ServiceName + " \"Reclaim DNS protection service\"");
+                RunSc("failure " + AppPaths.ServiceName + " reset= 86400 actions= restart/5000/restart/5000/restart/5000");
+
+                using (RegistryKey k = Registry.LocalMachine.CreateSubKey(SafeBootKey))
+                {
+                    k.SetValue(string.Empty, "Service");
+                }
+                WriteUninstallEntry();
+                CreateShortcut();
+
+                StartService();
+
+                // Chốt lại lần nữa: không báo "thành công" nếu file đã bị xóa mất.
+                VerifyInstalledFiles();
             }
-            catch (UnauthorizedAccessException)
+            catch (Exception ex)
             {
-                throw new ReclaimException(ErrorCodes.Denied,
-                    "Không ghi được vào thư mục cài đặt. Nếu đang bật tự bảo vệ, hãy dùng \"Tạm gỡ bảo vệ\" trong ứng dụng trước.");
+                bool restored = false;
+                if (backedUp) restored = RollbackInstall(backupDir, exists);
+                else DeleteDirectoryQuietly(backupDir);
+
+                ReclaimException known = ex as ReclaimException;
+                if (known != null)
+                {
+                    throw new ReclaimException(known.Code, known.Message + (restored ? " Đã khôi phục bản cũ." : string.Empty));
+                }
+                throw;
             }
-            catch (IOException ex)
+
+            DeleteDirectoryQuietly(backupDir);
+        }
+
+        /// <returns>true nếu đã khôi phục xong bản cũ (khi đó bản sao lưu được xóa; nếu không, giữ lại để khôi phục tay).</returns>
+        private static bool RollbackInstall(string backupDir, bool restartService)
+        {
+            bool restored;
+            try
             {
-                throw new ReclaimException(ErrorCodes.Denied, "Không sao chép được file (đang được sử dụng?): " + ex.Message);
+                CopyTree(backupDir, AppPaths.InstallDir); // ghi đè các file mới bằng file cũ
+                restored = true;
             }
-
-            VerifyInstalledFiles();
-
-            string binPath = "\"" + Path.Combine(AppPaths.InstallDir, AppPaths.ServiceExeName) + "\" --service";
-            string quoted = "\"" + binPath.Replace("\"", "\\\"") + "\"";
-
-            if (!exists)
+            catch
             {
-                RunSc("create " + AppPaths.ServiceName + " binPath= " + quoted + " start= auto obj= LocalSystem DisplayName= \"Reclaim\"");
+                restored = false;
             }
-            else
+            if (restartService)
             {
-                RunSc("config " + AppPaths.ServiceName + " binPath= " + quoted + " start= auto");
+                try { StartService(); } catch { }
             }
-            RunSc("description " + AppPaths.ServiceName + " \"Reclaim DNS protection service\"");
-            RunSc("failure " + AppPaths.ServiceName + " reset= 86400 actions= restart/5000/restart/5000/restart/5000");
+            if (restored) DeleteDirectoryQuietly(backupDir);
+            return restored;
+        }
 
-            using (RegistryKey k = Registry.LocalMachine.CreateSubKey(SafeBootKey))
-            {
-                k.SetValue(string.Empty, "Service");
-            }
-            WriteUninstallEntry();
-            CreateShortcut();
-
-            StartService();
-
-            // Chốt lại lần nữa: không báo "thành công" nếu file đã bị xóa mất.
-            VerifyInstalledFiles();
+        private static void DeleteDirectoryQuietly(string path)
+        {
+            try { if (Directory.Exists(path)) Directory.Delete(path, true); } catch { }
         }
 
         private static string CleanupCancelMarker
@@ -209,6 +263,11 @@ namespace Reclaim.Core.Infrastructure
 
             if (IsServiceInstalled()) StopService();
 
+            // Gỡ quy tắc chặn DNS ngoài TRƯỚC khi trả DNS: nếu để sót, máy sẽ mất DNS sau khi Reclaim biến mất.
+            bool guardRemoved;
+            try { guardRemoved = new WindowsBypassGuard(NullLog.Instance).Remove(); }
+            catch { guardRemoved = false; }
+
             // Trả DNS về như cũ khi dịch vụ đã dừng (DataDir còn dns-backup.json).
             bool dnsRestored;
             try
@@ -218,12 +277,13 @@ namespace Reclaim.Core.Infrastructure
                 dnsRestored = dns.ResetAll() & dns.RecoverOrphans(new DnsProbe().IsResolverAnswering);
             }
             catch { dnsRestored = false; }
-            if (!dnsRestored)
+            if (!dnsRestored || !guardRemoved)
             {
                 // Không xóa gì cả: dịch vụ được bật lại (tự áp dụng lại bảo vệ) để máy không mất mạng, giữ nguyên bản sao lưu DNS.
                 try { if (IsServiceInstalled()) StartService(); } catch { }
                 throw new ReclaimException(ErrorCodes.ApplyFailed,
-                    "Không khôi phục được DNS ban đầu của một số adapter nên đã hủy gỡ cài đặt (dịch vụ được bật lại). Hãy thử lại.");
+                    "Không khôi phục được " + (dnsRestored ? "quy tắc tường lửa/chính sách do Reclaim đặt" : "DNS ban đầu của một số adapter") +
+                    " nên đã hủy gỡ cài đặt (dịch vụ được bật lại). Hãy thử lại.");
             }
 
             if (IsServiceInstalled())

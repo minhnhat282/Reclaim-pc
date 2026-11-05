@@ -17,7 +17,7 @@ namespace Reclaim.Core.Ipc
             _log = log;
         }
 
-        public Response Handle(Request r)
+        public Response Handle(Request r, bool callerIsAdmin)
         {
             try
             {
@@ -40,6 +40,13 @@ namespace Reclaim.Core.Ipc
 
                     case Ops.SetPassword:
                     {
+                        // Đặt mật khẩu LẦN ĐẦU phải do quản trị viên (token đã nâng quyền): nếu không, một tài khoản thường có thể
+                        // đặt mật khẩu trước và khóa chủ máy khỏi cài đặt.
+                        if (!callerIsAdmin)
+                        {
+                            return Fail(ErrorCodes.Denied,
+                                "Cần quyền quản trị viên để đặt mật khẩu lần đầu. Hãy chọn \"Đặt mật khẩu\" trong ứng dụng và xác nhận yêu cầu quyền quản trị.");
+                        }
                         string t = _engine.SetInitialPassword(r.NewPassword);
                         return Ok(_engine.GetState(t), t);
                     }

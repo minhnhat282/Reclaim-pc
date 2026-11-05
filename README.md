@@ -45,6 +45,7 @@ Reclaim.Service.exe (Windows service, LocalSystem)
 | `Reclaim.Core` | `Domain` (mô hình, kiểm tra ID), `Security` (PBKDF2, token), `Application` (ReclaimEngine + interface/ports, **không phụ thuộc Windows**), `Contracts`/`Ipc` (giao thức), `Infrastructure` (nextdns, netsh, ACL, installer), `Hosting` (lắp ráp) |
 | `Reclaim.Service` | Vỏ mỏng của dịch vụ + lệnh `install` / `uninstall` / `run` |
 | `Reclaim.Desktop` | Giao diện WPF, không chứa nghiệp vụ |
+| `Reclaim.Tests` | Unit test ReclaimEngine (đối tượng giả) |
 
 Điểm gắn với nextdns **duy nhất** là `Infrastructure/NextDnsConfig.cs` (định dạng file cấu hình) và
 `NextDnsProcessRunner.cs` (dòng lệnh `run -config-file`).
@@ -70,8 +71,20 @@ Sai 5 lần thì bị khóa tạm (15 giây, gấp đôi mỗi lần, tối đa 
 Quản trị viên cục bộ quyết tâm vẫn vượt qua được (Safe Mode không có mạng, công cụ chạy quyền SYSTEM như PsExec -s,
 khởi động từ USB, cài lại Windows...). Các lớp trên chặn thao tác thông thường (Task Manager, services.msc, `sc`, `net stop`,
 xóa thư mục, gỡ trong Settings). Để mạnh nhất: dùng tài khoản **Standard** hằng ngày, mật khẩu admin Windows do người khác giữ.
-Phiên bản này chưa chặn: DoH riêng của trình duyệt, VPN, phần mềm hard-code DNS (cổng 53/853 ra ngoài).
-Hướng mở rộng: luật Windows Firewall chỉ cho nextdns.exe ra cổng 53/853, và policy tắt Secure DNS của Chrome/Edge/Firefox.
+Vẫn chưa chặn được: VPN, DoH/DoT tới máy chủ không có trong danh sách chặn bên dưới, trình duyệt khác ngoài Chrome/Edge/Brave/Firefox.
+
+### Chặn đường vòng bộ lọc (tự áp dụng khi bảo vệ đang bật, tự gỡ khi tắt/gỡ cài đặt)
+Dịch vụ kiểm tra và áp lại các mục này mỗi 60 giây (`Infrastructure/WindowsBypassGuard.cs`):
+
+| Lớp | Nội dung |
+|---|---|
+| Tường lửa (COM `INetFwPolicy2`, 6 quy tắc outbound, tên bắt đầu bằng `Reclaim - `) | `nextdns.exe` không được gửi UDP/TCP cổng 53 (nextdns tự rơi về DNS không mã hóa tới NextDNS với profile "none" = **không lọc** khi DoH bị chặn); mọi chương trình khác không được gửi cổng 53/853 ra ngoài loopback; chặn 443 (TCP/QUIC) tới vài nhà cung cấp DNS công cộng (Google, Cloudflare, Quad9, OpenDNS, AdGuard) |
+| Chính sách trình duyệt (HKLM) | `DnsOverHttpsMode=off` cho Chrome, Edge, Brave; `DNSOverHTTPS\Enabled=0` + `Locked=1` cho Firefox. Chrome/Edge/Brave sẽ hiện "Managed by your organization" |
+| Chính sách Windows (HKLM) | `DisableSmartNameResolution=1` (không gửi truy vấn song song qua mọi adapter) |
+
+Giá trị registry sẵn có được lưu ở `HKLM\SOFTWARE\Reclaim\PolicyBackup` và khôi phục khi gỡ. Quy tắc chặn DNS ngoài **luôn được gỡ trước khi
+trả DNS về ban đầu** (tắt bảo vệ, dừng dịch vụ chủ động, gỡ cài đặt; gỡ cài đặt bị hủy nếu không gỡ được), nếu không máy sẽ mất DNS.
+Nếu không áp dụng được (ví dụ tường lửa Windows bị tắt/hỏng) Reclaim chỉ báo lỗi, không dừng bảo vệ.
 
 ## Hành vi cần biết
 - **DNS gốc được lưu ở hai nơi** (`dns-backup.json` và `HKLM\SOFTWARE\Reclaim\DnsBackup`); mất một nơi vẫn khôi phục được.
@@ -87,7 +100,13 @@ Hướng mở rộng: luật Windows Firewall chỉ cho nextdns.exe ra cổng 53
 - `mdns disabled`: tắt mDNS của nextdns. Nếu tên thiết bị `.local` trong mạng nội bộ không phân giải được, hãy xóa dòng này trong `NextDnsConfig.cs`.
 - `detect-captive-portals` tắt: không đăng nhập được Wi-Fi công cộng cần trang đăng nhập khi đang bật bảo vệ (tắt bảo vệ tạm để đăng nhập).
 - Dừng dịch vụ chủ động (bảo trì/gỡ) sẽ trả DNS về ban đầu (khôi phục cả DNS tĩnh đã lưu trong `dns-backup.json`); tắt máy thì giữ nguyên.
-- IPv6 trỏ về `::1` giống `nextdns activate`; nextdns chỉ nghe IPv4 nên truy vấn IPv6 thất bại ngay và Windows dùng IPv4.
+- **IPv6:** DNS IPv6 của adapter trỏ về `::1` và nextdns nghe cả `127.0.0.1:53` lẫn `[::1]:53` (hai dòng `listen`, đã kiểm chứng trên nextdns 1.49.0), nên `nslookup` không đối số cũng chạy. Nếu máy không bind được `::1` thì chỉ nghe IPv4.
+- **Đổi ID khi đang bảo vệ:** ID mới được thử bằng một nextdns tạm ở cổng khác trước; ID sai bị từ chối mà nextdns đang chạy và DNS của máy không bị đụng tới.
+- **Giám sát sức khỏe (mỗi 3 giây một vòng Tick, probe thưa 30 giây/lần khi khỏe):** nextdns sống nhưng NextDNS không với tới được thì **không** khởi động lại (không giúp được gì), chỉ báo lỗi sau 45 giây. nextdns không trả lời gì 3 lần liên tiếp, kéo dài đủ lâu, máy đang có mạng và cách lần khởi động lại trước 3 phút thì mới được khởi động lại (có kiểm tra mã băm). Dòng lỗi cuối của nextdns được đưa lên giao diện (ví dụ cổng 53 bị chiếm).
+- **Khi nextdns không chạy được** (antivirus cách ly, mã băm đổi, cổng 53 bận): vẫn là fail-closed, không tự trả DNS; giao diện báo nguyên nhân. Cách thoát: mở khóa -> tắt bảo vệ (trả DNS) rồi xử lý nguyên nhân.
+- **Đặt mật khẩu lần đầu cần quyền quản trị:** nút "Đặt mật khẩu" mở lại `Reclaim.exe /setpassword` có UAC (tài khoản thường sẽ được hỏi mật khẩu admin); dịch vụ từ chối nếu người gọi không phải quản trị viên, để tài khoản thường không đặt mật khẩu trước chủ máy. Xong phải bấm "Mở khóa" một lần.
+- **Giao diện xác minh dịch vụ trước khi gửi mật khẩu:** tiến trình giữ pipe phải là `Reclaim.Service.exe` đã cài; dịch vụ tạo pipe với `FirstPipeInstance` để không ai chiếm tên trước. Lỗi liên lạc được phân loại (chưa chạy / không xác minh được / quá thời gian / đứt kết nối) thay vì luôn báo "dịch vụ chưa chạy".
+- **Nâng cấp có hoàn tác:** cài đè sao lưu bản cũ sang `Reclaim.backup` trước; nếu chép/đăng ký/khởi động dịch vụ lỗi thì khôi phục bản cũ và bật lại dịch vụ.
 - Reclaim không có telemetry; chỉ gọi mạng qua nextdns (và một truy vấn DNS thử khi áp dụng cấu hình).
 
 ## Giả định chưa kiểm chứng (kiểm tra khi chạy thử lần đầu)
@@ -96,6 +115,10 @@ Mã được viết mà không có trình biên dịch .NET để build thử, n
 2. ID sai khiến NextDNS trả lỗi (SERVFAIL) chứ không âm thầm dùng cấu hình mặc định - ảnh hưởng độ chính xác của bước kiểm tra ID.
 3. DACL của dịch vụ thực sự chặn `sc stop`/`net stop` từ Administrators (thử bằng cmd quản trị khi bật "Chống vô hiệu hóa dịch vụ").
 4. `netsh ... set dnsservers ... validate=no` chạy tốt trên cả Win 10 và Win 11 của bạn.
+
+## Kiểm thử
+`src/Reclaim.Tests` (xunit, net48) chạy `ReclaimEngine` bằng đối tượng giả (DNS, nextdns, probe, tường lửa, kiểm tra ID): bật/tắt, đổi ID, thứ tự gỡ chặn trước khi trả DNS, watchdog, mật khẩu/khóa tạm.
+Chạy: `dotnet test src/Reclaim.Tests -c Release` (Windows). Workflow có job `test` riêng. Dự án test **không** nằm trong `Reclaim.sln` và ghi ra `src/Reclaim.Tests/bin` để không lọt vào file cài đặt.
 
 ## Build trên GitHub (Actions)
 

@@ -25,6 +25,13 @@ namespace Reclaim.Desktop
                 return;
             }
 
+            // /setpassword: tiến trình ĐƯỢC NÂNG QUYỀN chỉ để đặt mật khẩu lần đầu (dịch vụ yêu cầu quản trị viên).
+            if (e.Args.Any(a => string.Equals(a, "/setpassword", StringComparison.OrdinalIgnoreCase)))
+            {
+                Shutdown(RunSetPassword(e.Args));
+                return;
+            }
+
             bool createdNew;
             _singleInstance = new Mutex(true, "Local\\Reclaim.Desktop", out createdNew);
             if (!createdNew)
@@ -36,6 +43,36 @@ namespace Reclaim.Desktop
             var window = new MainWindow();
             MainWindow = window;
             window.Show();
+        }
+
+        /// <summary>
+        /// Hộp thoại đặt mật khẩu chạy trong tiến trình nâng quyền; kết quả ("OK" hoặc "cancelled") ghi vào file --result
+        /// để tiến trình gọi đọc. Token mở khóa của tiến trình này bị thu hồi ngay: người dùng mở khóa lại trong cửa sổ chính.
+        /// </summary>
+        private static int RunSetPassword(string[] args)
+        {
+            string resultFile = null;
+            for (int i = 0; i + 1 < args.Length; i++)
+            {
+                if (string.Equals(args[i], "--result", StringComparison.OrdinalIgnoreCase)) resultFile = args[i + 1];
+            }
+
+            var client = new ReclaimClient();
+            var dialog = new PasswordDialog(PasswordDialogMode.Create, async input =>
+            {
+                try { await client.SetPasswordAsync(input.New); return null; }
+                catch (Reclaim.Core.Domain.ReclaimException ex) { return ex.Message; }
+            });
+            dialog.WindowStartupLocation = WindowStartupLocation.CenterScreen;
+            bool ok = dialog.ShowDialog() == true;
+            client.LockQuietly();
+
+            if (resultFile != null)
+            {
+                try { System.IO.File.WriteAllText(resultFile, ok ? "OK" : "cancelled"); }
+                catch { }
+            }
+            return ok ? 0 : 1;
         }
 
         private static void CloseOtherInstances()

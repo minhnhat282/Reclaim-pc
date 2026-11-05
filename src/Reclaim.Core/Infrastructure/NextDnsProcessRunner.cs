@@ -54,6 +54,28 @@ namespace Reclaim.Core.Infrastructure
             get { lock (_sync) { return _restarts; } }
         }
 
+        public int ConsecutiveFailures
+        {
+            get { lock (_sync) { return _failures; } }
+        }
+
+        /// <summary>
+        /// Dòng lỗi (error/crit/panic/fatal) gần nhất trong nhật ký của nextdns, ví dụ lỗi không bind được cổng 53.
+        /// </summary>
+        public string LastProblemLine()
+        {
+            lock (_linesSync)
+            {
+                string found = null;
+                foreach (string line in _lines)
+                {
+                    string l = line.ToLowerInvariant();
+                    if (l.Contains(".error(") || l.Contains(".crit(") || l.Contains("panic") || l.Contains("fatal")) found = line;
+                }
+                return found;
+            }
+        }
+
         public string ComputeBinaryHash()
         {
             if (!File.Exists(_exe)) return null;

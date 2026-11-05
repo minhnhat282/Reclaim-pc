@@ -21,12 +21,18 @@ namespace Reclaim.Desktop.Services
         /// </summary>
         public static ElevationResult Run(string exePath, string verb)
         {
+            return Run(exePath, verb, false);
+        }
+
+        /// <param name="visible">true nếu tiến trình nâng quyền có cửa sổ cần hiện ra (hộp thoại); false thì chạy ẩn.</param>
+        public static ElevationResult Run(string exePath, string verb, bool visible)
+        {
             string resultFile = Path.Combine(Path.GetTempPath(), "reclaim-" + Guid.NewGuid().ToString("N") + ".txt");
             var info = new ProcessStartInfo(exePath, verb + " --result \"" + resultFile + "\"")
             {
                 UseShellExecute = true,
                 Verb = "runas",
-                WindowStyle = ProcessWindowStyle.Hidden,
+                WindowStyle = visible ? ProcessWindowStyle.Normal : ProcessWindowStyle.Hidden,
                 WorkingDirectory = Path.GetDirectoryName(exePath)
             };
 

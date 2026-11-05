@@ -60,10 +60,15 @@ namespace Reclaim.Desktop
                 _state = s;
                 ApplyState(s);
             }
+            catch (ReclaimException ex)
+            {
+                _state = null;
+                ShowUnavailable(ex.Code, ex.Message);
+            }
             catch (Exception ex)
             {
                 _state = null;
-                ShowUnavailable(ex.Message);
+                ShowUnavailable(ErrorCodes.Internal, ex.Message);
             }
             finally
             {
@@ -71,14 +76,28 @@ namespace Reclaim.Desktop
             }
         }
 
-        private void ShowUnavailable(string reason)
+        /// <summary>Phân loại lý do không liên lạc được: không còn coi mọi lỗi là "dịch vụ chưa chạy".</summary>
+        private void ShowUnavailable(string code, string reason)
         {
             MainPanel.Visibility = Visibility.Collapsed;
             UnavailablePanel.Visibility = Visibility.Visible;
 
             bool installed = AppInstaller.IsServiceInstalled();
-            UnavailableText.Text = installed ? Strings.ServiceNotRunning : Strings.ServiceNotInstalled;
-            InstallButton.Visibility = installed ? Visibility.Collapsed : Visibility.Visible;
+            switch (code)
+            {
+                case ErrorCodes.Unavailable:
+                    UnavailableText.Text = installed ? Strings.ServiceNotRunning : Strings.ServiceNotInstalled;
+                    InstallButton.Visibility = installed ? Visibility.Collapsed : Visibility.Visible;
+                    break;
+                case ErrorCodes.BadServer:
+                    UnavailableText.Text = Strings.ServiceUntrusted;
+                    InstallButton.Visibility = Visibility.Collapsed;
+                    break;
+                default:
+                    UnavailableText.Text = Strings.ServiceCommError + " " + reason;
+                    InstallButton.Visibility = installed ? Visibility.Collapsed : Visibility.Visible;
+                    break;
+            }
             SetStatus(Strings.StatusInactive, "Danger");
         }
 
@@ -221,15 +240,22 @@ namespace Reclaim.Desktop
             return dialog.ShowDialog() == true;
         }
 
-        private bool PromptCreatePassword()
+        /// <summary>
+        /// Đặt mật khẩu lần đầu: dịch vụ chỉ chấp nhận từ quản trị viên, nên mở lại Reclaim.exe với quyền nâng cao
+        /// (hộp thoại UAC) để hiện hộp thoại đặt mật khẩu. Tiến trình đó không chuyển token cho cửa sổ này nên sau đó cần "Mở khóa".
+        /// </summary>
+        private async Task CreatePasswordAsync()
         {
-            var dialog = new PasswordDialog(PasswordDialogMode.Create, async input =>
+            string exe = System.Reflection.Assembly.GetEntryAssembly().Location;
+            ElevationResult result = await Task.Run(() => Elevation.Run(exe, "/setpassword", true));
+            if (result.Ok)
             {
-                try { await _client.SetPasswordAsync(input.New); return null; }
-                catch (ReclaimException ex) { return ex.Message; }
-            });
-            dialog.Owner = this;
-            return dialog.ShowDialog() == true;
+                ShowMessage(Strings.PasswordCreated, false);
+            }
+            else if (result.Message != "cancelled")
+            {
+                ShowMessage(result.Message, true);
+            }
         }
 
         // ------------------------------------------------------------ sự kiện: kết nối
@@ -287,7 +313,7 @@ namespace Reclaim.Desktop
             if (_state == null) return;
             if (!_state.PasswordSet)
             {
-                await RunAsync(async delegate { PromptCreatePassword(); await Task.FromResult(0); }, null);
+                await RunAsync(() => CreatePasswordAsync(), null);
             }
             else if (!_state.Unlocked)
             {
@@ -305,8 +331,7 @@ namespace Reclaim.Desktop
             {
                 await RefreshAsync(); // hoàn nguyên công tắc
                 ShowMessage(Strings.NeedPasswordFirst, true);
-                PromptCreatePassword();
-                await RefreshAsync();
+                await RunAsync(() => CreatePasswordAsync(), null);
                 return;
             }
 

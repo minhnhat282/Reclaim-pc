@@ -15,21 +15,23 @@ namespace Reclaim.Core.Application
     {
         private const int FreeAttempts = 5;
         private static readonly TimeSpan MaintenanceWindow = TimeSpan.FromMinutes(5);
-        // nextdns khởi động nguội có thể mất ~11-13 giây để chọn được endpoint DoH (xem nhật ký), nên chờ rộng rãi.
-        private static readonly TimeSpan HealthTimeout = TimeSpan.FromSeconds(30);
-        private const int ProbeTimeoutMs = 7000;
 
         private readonly ISettingsStore _store;
         private readonly IDnsConfigurator _dns;
         private readonly INextDnsRunner _runner;
         private readonly IHealthProbe _probe;
         private readonly IProtectionHardener _hardener;
+        private readonly IBypassGuard _guard;
+        private readonly IProfileVerifier _verifier;
         private readonly ILog _log;
+        private readonly EngineOptions _opt;
         private readonly SessionStore _sessions = new SessionStore(TimeSpan.FromMinutes(10), 8);
 
+        // Thứ tự khóa (luôn theo chiều này, không bao giờ ngược): _applyLock -> _lifecycle -> _gate / _watchLock (lá).
         private readonly object _gate = new object();      // bảo vệ trạng thái trong bộ nhớ (ngắn)
         private readonly object _authLock = new object();  // tuần tự hóa việc kiểm tra mật khẩu
         private readonly object _applyLock = new object(); // tuần tự hóa việc áp dụng cấu hình (có thể lâu)
+        private readonly object _watchLock = new object(); // trạng thái watchdog (ngắn)
 
         private readonly object _lifecycle = new object(); // tuần tự hóa khởi động nextdns/đặt DNS với Stop
         private volatile bool _stopped;
@@ -39,15 +41,30 @@ namespace Reclaim.Core.Application
         private DateTime _maintenanceUntilUtc = DateTime.MinValue;
         private string _lastError = string.Empty;
 
+        // Vấn đề đang diễn ra do Tick phát hiện (khác _lastError là lỗi của một thao tác): tự mất khi hết lỗi.
+        private readonly Dictionary<string, string> _issues = new Dictionary<string, string>();
+
+        // Watchdog (truy cập dưới _watchLock)
+        private DateTime _nextHealthUtc = DateTime.MinValue;
+        private DateTime _unhealthySinceUtc = DateTime.MinValue;
+        private DateTime _downSinceUtc = DateTime.MinValue;
+        private DateTime _lastRestartUtc = DateTime.MinValue;
+        private DateTime _nextGuardUtc = DateTime.MinValue;
+        private int _noResponseStreak;
+
         public ReclaimEngine(ISettingsStore store, IDnsConfigurator dns, INextDnsRunner runner,
-            IHealthProbe probe, IProtectionHardener hardener, ILog log)
+            IHealthProbe probe, IProtectionHardener hardener, IBypassGuard guard, IProfileVerifier verifier,
+            ILog log, EngineOptions options = null)
         {
             _store = store;
             _dns = dns;
             _runner = runner;
             _probe = probe;
             _hardener = hardener;
+            _guard = guard;
+            _verifier = verifier;
             _log = log;
+            _opt = options ?? new EngineOptions();
             _settings = _store.Load().Normalize();
         }
 
@@ -67,7 +84,13 @@ namespace Reclaim.Core.Application
 
             if (!s.Enabled || !ProfileId.IsValid(s.ProfileId))
             {
-                if (!s.Enabled) TryRecoverOrphans(); // bảo vệ đang tắt mà DNS còn trỏ loopback chết -> dọn
+                if (!s.Enabled)
+                {
+                    // Bảo vệ đang tắt: gỡ mọi chặn đường vòng còn sót (nếu không, quy tắc chặn DNS ngoài sẽ làm mất DNS)
+                    // TRƯỚC khi dọn DNS loopback mồ côi.
+                    TryRemoveGuard();
+                    TryRecoverOrphans();
+                }
                 return;
             }
             try
@@ -78,8 +101,10 @@ namespace Reclaim.Core.Application
                     if (_stopped) return; // dịch vụ đã nhận lệnh dừng trong lúc khởi động
                     _runner.Start(s.ProfileId);
                     lock (_gate) { _enforce = true; }
-                    _dns.RouteToLoopback();
+                    ResetWatchdog();
+                    RouteDns();
                 }
+                EnsureGuardIfDue(true);
                 _log.Info("Đã khởi động bảo vệ DNS.");
             }
             catch (ReclaimException ex)
@@ -100,6 +125,8 @@ namespace Reclaim.Core.Application
             lock (_gate) { _enforce = false; }
             if (resetDns)
             {
+                // Gỡ chặn DNS ngoài TRƯỚC khi trả DNS (nếu không, DNS ban đầu của máy sẽ bị chính quy tắc đó chặn).
+                TryRemoveGuard();
                 // Trả DNS TRƯỚC khi dừng nextdns để rút ngắn thời gian mất mạng.
                 try
                 {
@@ -111,7 +138,7 @@ namespace Reclaim.Core.Application
             if (resetDns) TryRecoverOrphans(); // nextdns đã dừng: dọn adapter loopback không có bản sao lưu
         }
 
-        /// <summary>Gọi định kỳ: giữ DNS đúng và hết hạn chế độ bảo trì.</summary>
+        /// <summary>Gọi định kỳ: giữ DNS đúng, kiểm tra sức khỏe nextdns, giữ chặn đường vòng, hết hạn chế độ bảo trì.</summary>
         public void Tick()
         {
             if (_stopped) return;
@@ -139,9 +166,10 @@ namespace Reclaim.Core.Application
                 lock (_lifecycle)
                 {
                     if (_stopped) return;
-                    try { _dns.RouteToLoopback(); }
-                    catch (Exception ex) { _log.Warn("Tick DNS: " + ex.Message); }
+                    RouteDns();
                 }
+                EnsureGuardIfDue(false);
+                RunWatchdog();
             }
         }
 
@@ -153,6 +181,8 @@ namespace Reclaim.Core.Application
             {
                 bool hasPw = _settings.HasPassword;
                 long now = DateTime.UtcNow.Ticks;
+                string error = _lastError;
+                if (string.IsNullOrEmpty(error) && _issues.Count > 0) error = string.Join(" ", _issues.Values);
                 return new StateDto
                 {
                     Enabled = _settings.Enabled,
@@ -164,7 +194,7 @@ namespace Reclaim.Core.Application
                     Protection = _settings.Protection.Clone(),
                     ThrottleSeconds = SecondsLeft(_settings.LockedUntilTicks - now),
                     MaintenanceSeconds = SecondsLeft(_maintenanceUntilUtc.Ticks - now),
-                    LastError = _lastError,
+                    LastError = error,
                     RestartCount = _runner.RestartCount
                 };
             }
@@ -207,10 +237,11 @@ namespace Reclaim.Core.Application
 
                 if (enabled)
                 {
-                    string failure = Activate(id);
+                    bool touched;
+                    string failure = Activate(id, out touched);
                     if (failure != null)
                     {
-                        Rollback(before);
+                        if (touched) Rollback(before); // chưa đụng tới nextdns đang chạy thì không có gì để hoàn tác
                         SetError(failure);
                         throw new ReclaimException(ErrorCodes.ApplyFailed, failure);
                     }
@@ -219,6 +250,7 @@ namespace Reclaim.Core.Application
                 {
                     // Khôi phục DNS TRƯỚC; nếu thất bại thì giữ nguyên bảo vệ (tắt nextdns khi DNS còn trỏ loopback = mất mạng).
                     lock (_gate) { _enforce = false; }
+                    TryRemoveGuard(); // quy tắc chặn DNS ngoài phải biến mất trước khi DNS được trả về ban đầu
                     bool restored;
                     try { restored = _dns.ResetAll(); }
                     catch (Exception ex)
@@ -229,13 +261,15 @@ namespace Reclaim.Core.Application
                     if (!restored)
                     {
                         lock (_gate) { _enforce = true; }
-                        try { _dns.RouteToLoopback(); } catch (Exception ex) { _log.Warn("RouteToLoopback: " + ex.Message); }
+                        lock (_lifecycle) { if (!_stopped) RouteDns(); }
+                        EnsureGuardIfDue(true); // khôi phục lại các chặn vừa gỡ
                         const string msg = "Không khôi phục được DNS ban đầu nên chưa thể tắt bảo vệ. Hãy thử lại.";
                         SetError(msg);
                         throw new ReclaimException(ErrorCodes.ApplyFailed, msg);
                     }
                     _runner.Stop();
                     TryRecoverOrphans();
+                    ClearIssues();
                 }
 
                 lock (_gate)
@@ -249,27 +283,44 @@ namespace Reclaim.Core.Application
             }
         }
 
+        /// <param name="touched">true nếu đã đụng tới nextdns/DNS đang chạy (cần Rollback khi thất bại).</param>
         /// <returns>null nếu thành công, ngược lại là thông báo lỗi.</returns>
-        private string Activate(string id)
+        private string Activate(string id, out bool touched)
         {
+            touched = false;
+
             // Cấu hình không đổi và nextdns đang chạy: không khởi động lại (khởi động lại = nextdns về trạng thái nguội,
-            // vài giây tới ~13 giây không có DNS). Chỉ áp lại DNS nếu cần.
+            // vài giây tới ~16 giây không có DNS). Chỉ áp lại DNS và các chặn đường vòng nếu cần.
             bool unchanged;
-            lock (_gate) { unchanged = _settings.Enabled && _enforce && _settings.ProfileId == id; }
+            bool changingWhileEnforcing;
+            lock (_gate)
+            {
+                unchanged = _settings.Enabled && _enforce && _settings.ProfileId == id;
+                changingWhileEnforcing = _enforce && _settings.ProfileId != id;
+            }
             if (unchanged && _runner.IsRunning)
             {
                 lock (_lifecycle)
                 {
                     if (_stopped) return "Dịch vụ đang dừng.";
-                    try { _dns.RouteToLoopback(); }
-                    catch (Exception ex) { _log.Warn("RouteToLoopback: " + ex.Message); }
+                    RouteDns();
                 }
+                EnsureGuardIfDue(true);
                 return null;
             }
 
             try { EnsureBinaryTrusted(); }
             catch (ReclaimException ex) { return ex.Message; }
 
+            // Đang bảo vệ bằng ID cũ mà đổi sang ID mới: thử ID mới bằng một nextdns tạm ở cổng khác TRƯỚC, để nhập sai
+            // ID không phải dừng nextdns đang phục vụ (dừng = DNS của máy chết tới khi khôi phục xong).
+            if (changingWhileEnforcing)
+            {
+                string bad = VerifyProfile(id);
+                if (bad != null) return bad;
+            }
+
+            touched = true;
             try
             {
                 if (!StartRunnerGuarded(id)) return "Dịch vụ đang dừng.";
@@ -289,10 +340,30 @@ namespace Reclaim.Core.Application
             {
                 if (_stopped) return "Dịch vụ đang dừng.";
                 lock (_gate) { _enforce = true; }
-                try { _dns.RouteToLoopback(); }
-                catch (Exception ex) { _log.Warn("RouteToLoopback: " + ex.Message); }
+                DnsRouteResult route = RouteDns();
+                if (route == null || !route.Usable)
+                {
+                    return "Không đặt được DNS hệ thống về nextdns" +
+                           (route == null ? "." : " (adapter lỗi: " + route.Describe() + ").");
+                }
+                ResetWatchdog();
             }
+            EnsureGuardIfDue(true);
             return null;
+        }
+
+        private string VerifyProfile(string id)
+        {
+            try
+            {
+                return _verifier.Verify(id, (int)_opt.VerifyTimeout.TotalMilliseconds);
+            }
+            catch (Exception ex)
+            {
+                // Lỗi của chính công cụ kiểm tra không được chặn người dùng: đi tiếp theo đường kiểm tra thường.
+                _log.Warn("Verify: " + ex.Message);
+                return null;
+            }
         }
 
         private bool StartRunnerGuarded(string profileId)
@@ -316,9 +387,11 @@ namespace Reclaim.Core.Application
             {
                 _runner.Stop();
                 lock (_gate) { _enforce = false; }
+                TryRemoveGuard();
                 try { _dns.ResetAll(); }
                 catch (Exception ex) { _log.Warn("ResetAll: " + ex.Message); }
                 TryRecoverOrphans();
+                ClearIssues();
             }
         }
 
@@ -338,24 +411,43 @@ namespace Reclaim.Core.Application
         private string WaitUntilHealthy()
         {
             DateTime started = DateTime.UtcNow;
-            DateTime deadline = started + HealthTimeout;
+            DateTime deadline = started + _opt.HealthTimeout;
             int last = -1;
             bool answered = false;
             while (DateTime.UtcNow < deadline)
             {
-                last = _probe.QueryRcode(ProbeTimeoutMs);
+                last = _probe.QueryRcode(_opt.ProbeTimeoutMs);
                 if (last == 0 || last == 3)
                 {
                     _log.Info("nextdns sẵn sàng sau " + (int)(DateTime.UtcNow - started).TotalSeconds + " giây.");
                     return null;
                 }
                 if (last >= 0) answered = true;
-                Thread.Sleep(300);
+
+                // nextdns đã thoát nhiều lần liên tiếp (cổng 53 bận, bị antivirus cách ly...): báo nguyên nhân thật ngay,
+                // không chờ hết thời gian.
+                if (!_runner.IsRunning && _runner.ConsecutiveFailures >= 2)
+                {
+                    return "nextdns không chạy được" + Detail(_runner.LastProblemLine());
+                }
+                Thread.Sleep(_opt.PollSleepMs);
             }
-            _log.Warn("nextdns chưa sẵn sàng sau " + (int)HealthTimeout.TotalSeconds + " giây (RCODE cuối: " + last + ").");
+            _log.Warn("nextdns chưa sẵn sàng sau " + (int)_opt.HealthTimeout.TotalSeconds + " giây (RCODE cuối: " + last + ").");
+            string detail = Detail(_runner.LastProblemLine());
             return answered
-                ? "NextDNS trả lỗi (mã DNS " + last + "). Hãy kiểm tra lại ID NextDNS."
-                : "nextdns chưa kết nối được tới NextDNS sau " + (int)HealthTimeout.TotalSeconds + " giây. Hãy kiểm tra kết nối mạng rồi thử lại.";
+                ? "NextDNS trả lỗi (mã DNS " + last + "). Hãy kiểm tra lại ID NextDNS" + detail
+                : "nextdns chưa kết nối được tới NextDNS sau " + (int)_opt.HealthTimeout.TotalSeconds +
+                  " giây. Hãy kiểm tra kết nối mạng rồi thử lại" + detail;
+        }
+
+        /// <summary>Biến dòng lỗi thô của nextdns thành phần đuôi câu thông báo ("" nếu không có dòng nào).</summary>
+        private static string Detail(string line)
+        {
+            if (string.IsNullOrEmpty(line)) return ".";
+            string lower = line.ToLowerInvariant();
+            if (lower.Contains("only one usage") || lower.Contains("address already in use") || lower.Contains("access permissions"))
+                return " (cổng 53 đang bị chương trình khác dùng hoặc bị chặn). Chi tiết: " + line;
+            return ". Chi tiết: " + line;
         }
 
         private void EnsureBinaryTrusted()
@@ -379,6 +471,217 @@ namespace Reclaim.Core.Application
                         "nextdns.exe đã bị thay đổi so với lúc cài đặt. Hãy cài đặt lại Reclaim.");
                 }
             }
+        }
+
+        // ------------------------------------------------------------ DNS, chặn đường vòng, watchdog
+
+        /// <summary>Ép DNS về loopback và ghi nhận adapter lỗi thành "vấn đề" hiển thị. Gọi dưới _lifecycle.</summary>
+        /// <returns>null nếu việc gọi ném ngoại lệ.</returns>
+        private DnsRouteResult RouteDns()
+        {
+            DnsRouteResult result;
+            try
+            {
+                result = _dns.RouteToLoopback();
+            }
+            catch (Exception ex)
+            {
+                _log.Warn("RouteToLoopback: " + ex.Message);
+                SetIssue("dns", "Không đặt được DNS về nextdns: " + ex.Message);
+                return null;
+            }
+            SetIssue("dns", result.AllOk ? null : "Chưa đặt được DNS cho adapter: " + result.Describe() + ".");
+            return result;
+        }
+
+        /// <summary>Áp dụng/kiểm tra lại các chặn đường vòng (tường lửa, chính sách trình duyệt). Gọi định kỳ từ Tick.</summary>
+        private void EnsureGuardIfDue(bool force)
+        {
+            DateTime now = DateTime.UtcNow;
+            lock (_watchLock)
+            {
+                if (!force && now < _nextGuardUtc) return;
+                _nextGuardUtc = now + _opt.GuardCheckInterval;
+            }
+            lock (_lifecycle)
+            {
+                if (_stopped) return;
+                bool enforce;
+                lock (_gate) { enforce = _enforce; }
+                if (!enforce) return;
+
+                IList<string> problems;
+                try { problems = _guard.Ensure(); }
+                catch (Exception ex) { problems = new List<string> { ex.Message }; }
+                // Không chặn được đường vòng chỉ làm giảm mức bảo vệ chứ không làm mất mạng: báo lỗi, không dừng.
+                SetIssue("guard", problems == null || problems.Count == 0
+                    ? null
+                    : "Chưa chặn được hết các đường vòng bộ lọc: " + string.Join("; ", problems) + ".");
+            }
+        }
+
+        private void TryRemoveGuard()
+        {
+            try
+            {
+                if (!_guard.Remove()) _log.Warn("Chưa gỡ hết các chặn đường vòng của Reclaim.");
+            }
+            catch (Exception ex)
+            {
+                _log.Warn("Guard.Remove: " + ex.Message);
+            }
+            SetIssue("guard", null);
+        }
+
+        private void ResetWatchdog()
+        {
+            lock (_watchLock)
+            {
+                _nextHealthUtc = DateTime.UtcNow + _opt.WatchdogInterval; // nextdns vừa (khởi động lại) nguội: chờ nó ổn định
+                _unhealthySinceUtc = DateTime.MinValue;
+                _downSinceUtc = DateTime.MinValue;
+                _noResponseStreak = 0;
+            }
+            SetIssue("nextdns", null);
+        }
+
+        /// <summary>
+        /// Kiểm tra sức khỏe định kỳ khi đang bảo vệ. Quy tắc:
+        ///  - nextdns trả lời hợp lệ: khỏe.
+        ///  - nextdns trả lời nhưng lỗi (SERVFAIL...): sự cố phía mạng/NextDNS, KHÔNG khởi động lại (không giúp được gì).
+        ///  - nextdns không trả lời gì (treo) 3 lần liên tiếp, kéo dài đủ lâu, máy đang có mạng, và cách lần khởi động lại
+        ///    trước đủ xa: khởi động lại nextdns.
+        ///  - Chính sách khi nextdns không chạy được vẫn là fail-closed (không tự trả DNS): chỉ báo nguyên nhân.
+        /// </summary>
+        private void RunWatchdog()
+        {
+            DateTime now = DateTime.UtcNow;
+            lock (_watchLock) { if (now < _nextHealthUtc) return; }
+            if (!Monitor.TryEnter(_applyLock)) return; // đang áp dụng cấu hình: để SaveSettings tự lo
+            try
+            {
+                if (_stopped) return;
+                bool enforce;
+                lock (_gate) { enforce = _enforce; }
+                if (!enforce) return;
+
+                if (!_runner.IsRunning)
+                {
+                    string down = Detail(_runner.LastProblemLine());
+                    bool report;
+                    lock (_watchLock)
+                    {
+                        if (_downSinceUtc == DateTime.MinValue) _downSinceUtc = now;
+                        report = now - _downSinceUtc >= _opt.IssueAfter;
+                        _nextHealthUtc = now + _opt.WatchdogRetryInterval;
+                    }
+                    if (report) SetIssue("nextdns", "nextdns không chạy được" + down);
+                    return;
+                }
+                lock (_watchLock) { _downSinceUtc = DateTime.MinValue; }
+
+                int rcode = _probe.QueryRcode(_opt.WatchdogProbeTimeoutMs);
+                now = DateTime.UtcNow;
+                if (rcode == 0 || rcode == 3)
+                {
+                    lock (_watchLock)
+                    {
+                        _unhealthySinceUtc = DateTime.MinValue;
+                        _noResponseStreak = 0;
+                        _nextHealthUtc = now + _opt.WatchdogInterval;
+                    }
+                    SetIssue("nextdns", null);
+                    return;
+                }
+
+                string detail = Detail(_runner.LastProblemLine());
+                bool reportIssue;
+                bool restart;
+                lock (_watchLock)
+                {
+                    if (_unhealthySinceUtc == DateTime.MinValue) _unhealthySinceUtc = now;
+                    if (rcode < 0) _noResponseStreak++; else _noResponseStreak = 0;
+                    TimeSpan bad = now - _unhealthySinceUtc;
+                    _nextHealthUtc = now + _opt.WatchdogRetryInterval;
+                    reportIssue = bad >= _opt.IssueAfter;
+                    restart = rcode < 0
+                              && _noResponseStreak >= _opt.NoResponseChecksBeforeRestart
+                              && bad >= _opt.UnhealthyRestartAfter
+                              && now - _lastRestartUtc >= _opt.MinRestartGap;
+                }
+
+                bool network = _probe.IsNetworkAvailable();
+                if (reportIssue)
+                {
+                    string message;
+                    if (!network) message = "Máy đang không có kết nối mạng; DNS tạm dừng cho tới khi có mạng trở lại.";
+                    else if (rcode < 0) message = "nextdns không trả lời truy vấn DNS" + detail;
+                    else message = "NextDNS trả lỗi (mã DNS " + rcode + "). Hãy kiểm tra kết nối mạng và ID NextDNS" + detail;
+                    SetIssue("nextdns", message);
+                }
+                if (restart && network) RestartNextDns();
+            }
+            finally
+            {
+                Monitor.Exit(_applyLock);
+            }
+        }
+
+        private void RestartNextDns()
+        {
+            string id;
+            lock (_gate) { id = _settings.ProfileId; }
+            lock (_lifecycle)
+            {
+                if (_stopped) return;
+                try
+                {
+                    EnsureBinaryTrusted(); // khởi động lại cũng phải qua kiểm tra mã băm
+                    _log.Warn("nextdns không phản hồi: khởi động lại.");
+                    _runner.Start(id);
+                }
+                catch (ReclaimException ex)
+                {
+                    SetIssue("nextdns", ex.Message);
+                }
+                catch (Exception ex)
+                {
+                    _log.Error("Restart: " + ex.Message);
+                }
+                lock (_watchLock)
+                {
+                    DateTime now = DateTime.UtcNow;
+                    _lastRestartUtc = now;
+                    _noResponseStreak = 0;
+                    _unhealthySinceUtc = DateTime.MinValue;
+                    _nextHealthUtc = now + _opt.HealthTimeout;
+                }
+            }
+        }
+
+        private void SetIssue(string key, string message)
+        {
+            bool changed;
+            lock (_gate)
+            {
+                string old;
+                _issues.TryGetValue(key, out old);
+                if (string.IsNullOrEmpty(message))
+                {
+                    changed = _issues.Remove(key);
+                }
+                else
+                {
+                    changed = old != message;
+                    _issues[key] = message;
+                }
+            }
+            if (changed && !string.IsNullOrEmpty(message)) _log.Warn(message);
+        }
+
+        private void ClearIssues()
+        {
+            lock (_gate) { _issues.Clear(); }
         }
 
         // ------------------------------------------------------------ mật khẩu / khóa

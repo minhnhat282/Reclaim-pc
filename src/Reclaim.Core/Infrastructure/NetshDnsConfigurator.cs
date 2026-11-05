@@ -30,8 +30,7 @@ namespace Reclaim.Core.Infrastructure
     /// <summary>
     /// Đặt DNS của mọi adapter đang hoạt động về 127.0.0.1 / ::1 bằng netsh (theo chỉ số adapter nên không phụ thuộc ngôn ngữ).
     /// Lưu DNS tĩnh ban đầu của từng adapter để khôi phục chính xác khi tắt/gỡ cài đặt.
-    /// IPv6 trỏ về ::1 giống hành vi "nextdns activate" của upstream (nextdns chỉ lắng nghe IPv4;
-    /// truy vấn tới ::1 thất bại ngay và Windows chuyển sang IPv4).
+    /// IPv6 trỏ về ::1; nextdns được cấu hình nghe cả [::1]:53 (xem NextDnsConfig), nên cả hai họ IP đều được lọc.
     /// </summary>
     public sealed class NetshDnsConfigurator : IDnsConfigurator
     {
@@ -52,18 +51,25 @@ namespace Reclaim.Core.Infrastructure
             _log = log;
         }
 
-        public void RouteToLoopback()
+        public DnsRouteResult RouteToLoopback()
         {
+            var result = new DnsRouteResult();
             lock (_sync)
             {
                 bool changed = false;
                 foreach (NetworkInterface nic in Candidates())
                 {
-                    try { changed |= EnforceOne(nic); }
-                    catch (Exception ex) { _log.Warn("DNS " + nic.Name + ": " + ex.Message); }
+                    try { changed |= EnforceOne(nic, result); }
+                    catch (Exception ex)
+                    {
+                        _log.Warn("DNS " + nic.Name + ": " + ex.Message);
+                        result.Failures.Add(nic.Name);
+                    }
                 }
                 if (changed) FlushCache();
+                result.Changed = changed;
             }
+            return result;
         }
 
         /// <returns>true nếu mọi adapter đã được khôi phục. Bản sao lưu của adapter chưa khôi phục được GIỮ LẠI để thử lại.</returns>
@@ -176,35 +182,45 @@ namespace Reclaim.Core.Infrastructure
             }
         }
 
-        private bool EnforceOne(NetworkInterface nic)
+        /// <returns>true nếu có đổi DNS của adapter. Kết quả đạt/lỗi của adapter được ghi vào result.</returns>
+        private bool EnforceOne(NetworkInterface nic, DnsRouteResult result)
         {
             if (nic.OperationalStatus != OperationalStatus.Up) return false;
             IPInterfaceProperties props = nic.GetIPProperties();
             int i4 = Index(props, false);
             int i6 = Index(props, true);
+            if (i4 < 0 && i6 < 0) return false; // adapter không có họ IP nào: không có gì để ép
             bool changed = false;
+            bool ok = true;
 
             if (i4 >= 0 && !IsCompliant(props, AddressFamily.InterNetwork))
             {
-                if (!BackupFamily(nic, false)) return changed; // không có bản sao lưu thì KHÔNG đổi DNS
-                changed |= Apply(nic, false, i4);
+                if (!BackupFamily(nic, false)) ok = false; // không có bản sao lưu thì KHÔNG đổi DNS
+                else if (Apply(nic, false, i4)) changed = true;
+                else ok = false;
             }
             if (i6 >= 0 && !IsCompliant(props, AddressFamily.InterNetworkV6))
             {
-                if (!BackupFamily(nic, true)) return changed;
-                changed |= Apply(nic, true, i6);
+                if (!BackupFamily(nic, true)) ok = false;
+                else if (Apply(nic, true, i6)) changed = true;
+                else ok = false;
             }
+
+            if (ok) result.Compliant++;
+            else result.Failures.Add(nic.Name);
             return changed;
         }
 
+        /// <summary>Đúng MỘT địa chỉ DNS của họ IP đó và địa chỉ ấy phải đúng 127.0.0.1 (IPv4) / ::1 (IPv6).</summary>
         private static bool IsCompliant(IPInterfaceProperties props, AddressFamily family)
         {
+            IPAddress want = family == AddressFamily.InterNetworkV6 ? IPAddress.IPv6Loopback : IPAddress.Loopback;
             int count = 0;
             foreach (IPAddress a in props.DnsAddresses)
             {
                 if (a.AddressFamily != family) continue;
                 count++;
-                if (!IPAddress.IsLoopback(a)) return false;
+                if (!a.Equals(want)) return false;
             }
             return count == 1;
         }
