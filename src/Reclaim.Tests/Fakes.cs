@@ -29,6 +29,8 @@ namespace Reclaim.Tests
             return Route();
         }
 
+        public string DescribeAdapters() { return "fake-adapter DNS=127.0.0.1"; }
+
         public bool ResetAll()
         {
             lock (_events) { _events.Add("dns.reset"); }

@@ -393,19 +393,36 @@ namespace Reclaim.Desktop
             }, null);
         }
 
+        /// <summary>
+        /// Lưu nhật ký (dịch vụ Reclaim + nextdns + giao diện) thành một file trên Desktop để gửi đi chẩn đoán.
+        /// Nhật ký không chứa mật khẩu, token hay truy vấn DNS.
+        /// </summary>
         private async void Log_Click(object sender, RoutedEventArgs e)
         {
             try
             {
                 string[] lines = await GuardedAsync(() => _client.GetLogAsync());
-                string text = lines.Length == 0
-                    ? "Chưa có dòng nhật ký nào từ nextdns.\n\nNhật ký đầy đủ: " + AppPaths.LogFile + " và Event Viewer (nguồn \"nextdns\")."
-                    : string.Join(Environment.NewLine, lines);
-                MessageBox.Show(this, text, "Nhật ký nextdns", MessageBoxButton.OK, MessageBoxImage.None);
+                var all = new System.Collections.Generic.List<string>(lines);
+                all.Add("===== Nhật ký giao diện (gui.log) =====");
+                try
+                {
+                    if (File.Exists(App.GuiLogFile)) all.AddRange(File.ReadAllLines(App.GuiLogFile));
+                }
+                catch (Exception ex) { all.Add("(không đọc được gui.log: " + ex.Message + ")"); }
+
+                string file = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
+                    "Reclaim-nhat-ky-" + DateTime.Now.ToString("yyyyMMdd-HHmm") + ".txt");
+                File.WriteAllLines(file, all, new System.Text.UTF8Encoding(true));
+                try { System.Diagnostics.Process.Start("explorer.exe", "/select,\"" + file + "\""); } catch { }
+                ShowMessage("Đã lưu nhật ký vào Desktop: " + Path.GetFileName(file), false);
             }
             catch (ReclaimException ex)
             {
                 if (ex.Code != ErrorCodes.Cancelled) ShowMessage(ex.Message, true);
+            }
+            catch (Exception ex)
+            {
+                ShowMessage("Không lưu được nhật ký: " + ex.Message, true);
             }
         }
 

@@ -116,6 +116,14 @@ Mã được viết mà không có trình biên dịch .NET để build thử, n
 3. DACL của dịch vụ thực sự chặn `sc stop`/`net stop` từ Administrators (thử bằng cmd quản trị khi bật "Chống vô hiệu hóa dịch vụ").
 4. `netsh ... set dnsservers ... validate=no` chạy tốt trên cả Win 10 và Win 11 của bạn.
 
+## Nhật ký chẩn đoán
+Dịch vụ ghi `C:\ProgramData\Reclaim\reclaim.log` (xoay vòng 512 KB x 2), giao diện ghi `%LOCALAPPDATA%\Reclaim\gui.log`. **Không có mật khẩu, token hay truy vấn DNS.**
+Nút **Nhật ký** trong ứng dụng gộp nhật ký dịch vụ + nextdns + giao diện thành một file `Reclaim-nhat-ky-<ngày>.txt` trên Desktop để gửi đi chẩn đoán (cần mở khóa nếu đã đặt mật khẩu).
+Nội dung chính:
+- **Khi khởi động:** phiên bản, Windows, IPv6 loopback bind được không, địa chỉ nextdns nghe, DNS từng adapter.
+- **Sự kiện:** mỗi lần ép DNS adapter (kèm DNS trước đó), tạo/sửa quy tắc tường lửa và chính sách, nextdns bắt đầu không ổn định / khỏe lại (kèm thời gian), nextdns khởi động lại, lỗi liên lạc giữa giao diện và dịch vụ, tiến trình pipe lạ.
+- **Mỗi 10 phút:** một dòng tóm tắt (số lần thăm dò ổn/lỗi/không trả lời, độ trễ trung bình và tối đa, số lần DNS bị đổi và phải ép lại, số lần nextdns khởi động lại, sự cố hiện tại) và ảnh chụp DNS các adapter.
+
 ## Kiểm thử
 `src/Reclaim.Tests` (xunit, net48) chạy `ReclaimEngine` bằng đối tượng giả (DNS, nextdns, probe, tường lửa, kiểm tra ID): bật/tắt, đổi ID, thứ tự gỡ chặn trước khi trả DNS, watchdog, mật khẩu/khóa tạm.
 Chạy: `dotnet test src/Reclaim.Tests -c Release` (Windows). Workflow có job `test` riêng. Dự án test **không** nằm trong `Reclaim.sln` và ghi ra `src/Reclaim.Tests/bin` để không lọt vào file cài đặt.

@@ -196,6 +196,10 @@ namespace Reclaim.Core.Infrastructure
             if (Convert.ToInt32(Get(rule, "Action")) != ActionBlock) return false;
             if (Convert.ToInt32(Get(rule, "Protocol")) != spec.Protocol) return false;
             if (!string.Equals(Convert.ToString(Get(rule, "RemotePorts")), spec.RemotePorts, StringComparison.OrdinalIgnoreCase)) return false;
+            int profiles = Convert.ToInt32(Get(rule, "Profiles"));
+            if (profiles != ProfilesAll && profiles != 7) return false; // "tất cả" có thể được trả về là 0x7FFFFFFF hoặc 7 (domain|private|public)
+            if (spec.Application != null &&
+                !string.Equals(Convert.ToString(Get(rule, "ApplicationName")), spec.Application, StringComparison.OrdinalIgnoreCase)) return false;
             // Mô tả mang phiên bản + đường dẫn + danh sách địa chỉ: đổi một trong ba thì quy tắc được tạo lại.
             // (Không so sánh trực tiếp RemoteAddresses vì Windows chuẩn hóa lại chuỗi này.)
             if (!string.Equals(Convert.ToString(Get(rule, "Description")), spec.Description, StringComparison.Ordinal)) return false;
@@ -229,10 +233,18 @@ namespace Reclaim.Core.Infrastructure
                 }
                 if (!removed)
                 {
-                    // Dự phòng: netsh (mã thoát 0 = đã xóa). Khi quy tắc không tồn tại netsh trả mã khác 0 nên cũng coi là lỗi,
-                    // nhưng trường hợp đó chỉ xảy ra khi COM cũng hỏng.
-                    ProcessResult r = ProcessUtil.Run("netsh.exe", "advfirewall firewall delete rule name=\"" + name + "\"", 15000);
-                    if (!r.Success) ok = false;
+                    // Dự phòng bằng netsh. "show rule" trả mã khác 0 khi không có quy tắc nào tên đó (không phụ thuộc ngôn ngữ):
+                    // khi đó coi như đã gỡ, nếu không thì máy không có quy tắc nào vẫn bị báo "gỡ thất bại" và kẹt khi tắt/gỡ cài đặt.
+                    ProcessResult exists = ProcessUtil.Run("netsh.exe", "advfirewall firewall show rule name=\"" + name + "\"", 15000);
+                    if (exists.Success)
+                    {
+                        ProcessResult r = ProcessUtil.Run("netsh.exe", "advfirewall firewall delete rule name=\"" + name + "\"", 15000);
+                        if (!r.Success)
+                        {
+                            _log.Warn("netsh không xóa được quy tắc \"" + name + "\": " + r.Output);
+                            ok = false;
+                        }
+                    }
                 }
             }
             return ok;
@@ -268,8 +280,8 @@ namespace Reclaim.Core.Infrastructure
                     RegistryValueKind currentKind = key.GetValueKind(spec.ValueName);
                     if (currentKind != RegistryValueKind.String && currentKind != RegistryValueKind.DWord)
                     {
-                        _log.Warn("Bỏ qua chính sách " + spec.Id + ": giá trị hiện có thuộc kiểu không hỗ trợ.");
-                        return;
+                        // Không ghi đè cấu hình lạ của quản trị viên, nhưng phải báo: phạm vi bảo vệ đang bị giảm.
+                        throw new InvalidOperationException("giá trị hiện có thuộc kiểu registry " + currentKind + " nên không được ghi đè");
                     }
                     if (currentKind == spec.Kind && ValueEquals(current, spec)) return; // đã đúng
                     SaveBackup(spec, true, currentKind, current);

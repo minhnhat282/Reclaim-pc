@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using Reclaim.Core.Application;
@@ -17,6 +18,34 @@ namespace Reclaim.Core.Infrastructure
         {
             _path = path;
             _echo = echoToConsole;
+        }
+
+        /// <summary>N dòng cuối của nhật ký (đọc cả file xoay vòng .1 nếu file hiện tại ngắn).</summary>
+        public IList<string> Tail(int count)
+        {
+            var lines = new List<string>();
+            lock (_sync)
+            {
+                foreach (string path in new[] { _path + ".1", _path })
+                {
+                    try
+                    {
+                        if (!File.Exists(path)) continue;
+                        using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                        using (var reader = new StreamReader(stream, Encoding.UTF8))
+                        {
+                            string line;
+                            while ((line = reader.ReadLine()) != null) lines.Add(line);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        lines.Add("(không đọc được " + Path.GetFileName(path) + ": " + ex.Message + ")");
+                    }
+                }
+            }
+            if (lines.Count > count) lines.RemoveRange(0, lines.Count - count);
+            return lines;
         }
 
         public void Info(string message) { Write("INFO", message); }

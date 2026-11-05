@@ -51,6 +51,9 @@ namespace Reclaim.Core.Application
         /// <summary>Đảm bảo mọi adapter đang hoạt động trỏ về loopback. Idempotent, rẻ khi đã đúng.</summary>
         DnsRouteResult RouteToLoopback();
 
+        /// <summary>Một dòng mô tả DNS hiện tại của từng adapter (để ghi nhật ký chẩn đoán).</summary>
+        string DescribeAdapters();
+
         /// <summary>Khôi phục DNS ban đầu của các adapter đã bị Reclaim thay đổi.</summary>
         /// <returns>true nếu mọi adapter đã được khôi phục; bản sao lưu của adapter lỗi được giữ lại để thử lại.</returns>
         bool ResetAll();

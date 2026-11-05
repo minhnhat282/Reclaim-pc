@@ -132,6 +132,7 @@ namespace Reclaim.Core.Infrastructure
                 bool restored = false;
                 if (backedUp) restored = RollbackInstall(backupDir, exists);
                 else DeleteDirectoryQuietly(backupDir);
+                if (!exists) CleanupFailedFreshInstall(); // cài mới thất bại: không để lại dịch vụ/registry/file dở dang
 
                 ReclaimException known = ex as ReclaimException;
                 if (known != null)
@@ -142,6 +143,20 @@ namespace Reclaim.Core.Infrastructure
             }
 
             DeleteDirectoryQuietly(backupDir);
+        }
+
+        /// <summary>
+        /// Hoàn tác một lần CÀI MỚI thất bại (chưa từng có dịch vụ): xóa dịch vụ vừa đăng ký, khóa registry, lối tắt và file đã chép.
+        /// Dữ liệu người dùng (DataDir) được giữ. Từng bước độc lập và chạy lại được nhiều lần.
+        /// </summary>
+        private static void CleanupFailedFreshInstall()
+        {
+            try { if (IsServiceInstalled()) StopService(); } catch { }
+            try { if (IsServiceInstalled()) ProcessUtil.Run("sc.exe", "delete " + AppPaths.ServiceName, 15000); } catch { }
+            try { Registry.LocalMachine.DeleteSubKeyTree(UninstallKey, false); } catch { }
+            try { Registry.LocalMachine.DeleteSubKeyTree(SafeBootKey, false); } catch { }
+            try { if (File.Exists(ShortcutPath)) File.Delete(ShortcutPath); } catch { }
+            DeleteDirectoryQuietly(AppPaths.InstallDir);
         }
 
         /// <returns>true nếu đã khôi phục xong bản cũ (khi đó bản sao lưu được xóa; nếu không, giữ lại để khôi phục tay).</returns>
@@ -189,7 +204,25 @@ namespace Reclaim.Core.Infrastructure
             {
                 // Không ghi được dấu thì vẫn tiếp tục; VerifyInstalledFiles sẽ báo lỗi nếu file bị xóa.
             }
-            Thread.Sleep(3500);
+            WaitForCleanupBatch();
+        }
+
+        /// <summary>
+        /// Chờ batch dọn dẹp của lần gỡ trước tự thoát (nó tự xóa file .bat của chính nó ở bước cuối, và kiểm tra file dấu
+        /// mỗi ~2 giây). Thay cho việc ngủ cố định: chờ tối thiểu 1 giây, tối đa 12 giây, thoát sớm khi không còn batch nào.
+        /// </summary>
+        private static void WaitForCleanupBatch()
+        {
+            DateTime started = DateTime.UtcNow;
+            Thread.Sleep(1000);
+            while (DateTime.UtcNow - started < TimeSpan.FromSeconds(12))
+            {
+                bool pending;
+                try { pending = Directory.GetFiles(Path.GetTempPath(), "reclaim-cleanup-*.bat").Length > 0; }
+                catch { pending = false; }
+                if (!pending) return;
+                Thread.Sleep(500);
+            }
         }
 
         private static void VerifyInstalledFiles()

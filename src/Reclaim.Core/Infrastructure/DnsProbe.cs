@@ -24,7 +24,9 @@ namespace Reclaim.Core.Infrastructure
         /// <summary>Có BẤT KỲ bộ phân giải nào trả lời ở 127.0.0.1:53 (kể cả trả lỗi) hay không.</summary>
         public bool IsResolverAnswering()
         {
-            return Query(new IPEndPoint(IPAddress.Loopback, 53), 2500) >= 0;
+            // Cả hai họ IP: một bộ phân giải riêng chỉ nghe ở [::1]:53 cũng phải được coi là "đang có người trả lời".
+            return Query(new IPEndPoint(IPAddress.Loopback, 53), 2500) >= 0
+                || Query(new IPEndPoint(IPAddress.IPv6Loopback, 53), 2500) >= 0;
         }
 
         /// <summary>
@@ -59,7 +61,7 @@ namespace Reclaim.Core.Infrastructure
 
                 byte[] query = BuildQuery(id, "reclaim-" + BitConverter.ToString(suffix).Replace("-", "").ToLowerInvariant() + ".example.com");
 
-                using (var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp))
+                using (var socket = new Socket(endpoint.AddressFamily, SocketType.Dgram, ProtocolType.Udp))
                 {
                     socket.ReceiveTimeout = timeoutMs;
                     socket.SendTimeout = 2500;

@@ -73,6 +73,35 @@ namespace Reclaim.Core.Infrastructure
         }
 
         /// <returns>true nếu mọi adapter đã được khôi phục. Bản sao lưu của adapter chưa khôi phục được GIỮ LẠI để thử lại.</returns>
+        public string DescribeAdapters()
+        {
+            var parts = new List<string>();
+            foreach (NetworkInterface nic in Candidates())
+            {
+                try
+                {
+                    if (nic.OperationalStatus != OperationalStatus.Up) continue;
+                    parts.Add(nic.Name + " [" + nic.NetworkInterfaceType + "] DNS=" + DnsList(nic.GetIPProperties(), null));
+                }
+                catch (Exception ex)
+                {
+                    parts.Add(nic.Name + " (lỗi đọc: " + ex.Message + ")");
+                }
+            }
+            return parts.Count == 0 ? "(không có adapter nào đang hoạt động)" : string.Join("; ", parts);
+        }
+
+        private static string DnsList(IPInterfaceProperties props, AddressFamily? family)
+        {
+            var list = new List<string>();
+            foreach (IPAddress a in props.DnsAddresses)
+            {
+                if (family.HasValue && a.AddressFamily != family.Value) continue;
+                list.Add(a.ToString());
+            }
+            return list.Count == 0 ? "-" : string.Join(",", list);
+        }
+
         public bool ResetAll()
         {
             lock (_sync)
@@ -196,13 +225,13 @@ namespace Reclaim.Core.Infrastructure
             if (i4 >= 0 && !IsCompliant(props, AddressFamily.InterNetwork))
             {
                 if (!BackupFamily(nic, false)) ok = false; // không có bản sao lưu thì KHÔNG đổi DNS
-                else if (Apply(nic, false, i4)) changed = true;
+                else if (Apply(nic, false, i4, DnsList(props, AddressFamily.InterNetwork))) changed = true;
                 else ok = false;
             }
             if (i6 >= 0 && !IsCompliant(props, AddressFamily.InterNetworkV6))
             {
                 if (!BackupFamily(nic, true)) ok = false;
-                else if (Apply(nic, true, i6)) changed = true;
+                else if (Apply(nic, true, i6, DnsList(props, AddressFamily.InterNetworkV6))) changed = true;
                 else ok = false;
             }
 
@@ -237,7 +266,7 @@ namespace Reclaim.Core.Infrastructure
             }
         }
 
-        private bool Apply(NetworkInterface nic, bool v6, int index)
+        private bool Apply(NetworkInterface nic, bool v6, int index, string before)
         {
             string key = nic.Id + (v6 ? "/6" : "/4");
             DateTime next;
@@ -250,7 +279,7 @@ namespace Reclaim.Core.Infrastructure
             if (r.Success)
             {
                 _retryAfter.Remove(key);
-                _log.Info("Đã đặt DNS " + family + " của \"" + nic.Name + "\" về loopback.");
+                _log.Info("Đã đặt DNS " + family + " của \"" + nic.Name + "\" về loopback (trước đó: " + before + ").");
                 return true;
             }
             _retryAfter[key] = DateTime.UtcNow + RetryDelay;

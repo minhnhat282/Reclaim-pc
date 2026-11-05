@@ -26,6 +26,9 @@ namespace Reclaim.Core.Application
         // Kiểm tra lại quy tắc tường lửa/chính sách registry (phòng bị xóa tay).
         public TimeSpan GuardCheckInterval = TimeSpan.FromSeconds(60);
 
+        // Chu kỳ ghi dòng tóm tắt chẩn đoán vào nhật ký.
+        public TimeSpan SummaryInterval = TimeSpan.FromMinutes(10);
+
         // Thời gian tối đa chờ nextdns tạm khi kiểm tra ID mới.
         public TimeSpan VerifyTimeout = TimeSpan.FromSeconds(40);
     }

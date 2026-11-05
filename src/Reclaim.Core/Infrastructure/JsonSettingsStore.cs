@@ -30,7 +30,12 @@ namespace Reclaim.Core.Infrastructure
                     if (File.Exists(_path))
                     {
                         _log.Error("settings.json hỏng, dùng cài đặt mặc định.");
-                        try { File.Move(_path, _path + ".corrupt"); } catch { }
+                        try
+                        {
+                            if (File.Exists(_path + ".corrupt")) File.Delete(_path + ".corrupt");
+                            File.Move(_path, _path + ".corrupt");
+                        }
+                        catch { }
                     }
                     s = AppSettings.CreateDefault();
                 }

@@ -10,11 +10,16 @@ namespace Reclaim.Desktop
     {
         private Mutex _singleInstance;
 
+        /// <summary>Nhật ký phía giao diện (lỗi liên lạc với dịch vụ, tiến trình pipe lạ...). Nằm trong thư mục của tài khoản người dùng.</summary>
+        public static readonly string GuiLogFile = System.IO.Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Reclaim", "gui.log");
+
         protected override async void OnStartup(StartupEventArgs e)
         {
             base.OnStartup(e);
 
             Theme.Apply();
+            Reclaim.Core.Ipc.PipeClient.Log = new Reclaim.Core.Infrastructure.FileLog(GuiLogFile, false);
 
             // /uninstall (từ Apps & features) phải chạy được kể cả khi cửa sổ chính đang mở ở tiến trình khác.
             if (e.Args.Any(a => string.Equals(a, "/uninstall", StringComparison.OrdinalIgnoreCase)))

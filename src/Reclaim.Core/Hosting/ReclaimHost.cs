@@ -29,8 +29,10 @@ namespace Reclaim.Core.Hosting
         {
             AcquireSingleHost();
             Directory.CreateDirectory(AppPaths.DataDir);
-            _log = new FileLog(AppPaths.LogFile, _echo);
-            _log.Info("Reclaim khởi động.");
+            var fileLog = new FileLog(AppPaths.LogFile, _echo);
+            _log = fileLog;
+            _log.Info("==================== Reclaim khởi động ====================");
+            LogEnvironment();
 
             var runner = new NextDnsProcessRunner(AppPaths.NextDnsExe, AppPaths.NextDnsConfFile, _log);
             _engine = new ReclaimEngine(
@@ -43,6 +45,7 @@ namespace Reclaim.Core.Hosting
                 new NextDnsProfileVerifier(AppPaths.NextDnsExe, Path.Combine(AppPaths.DataDir, "verify.conf"), _log),
                 _log);
 
+            _engine.LogTail = fileLog.Tail;
             _pipe = new PipeServer(new RequestRouter(_engine, _log).Handle, _log);
             _pipe.Start();
 
@@ -56,6 +59,25 @@ namespace Reclaim.Core.Hosting
             _tick = new Timer(OnTick, null, 3000, 3000);
             NetworkChange.NetworkAddressChanged += OnNetworkChanged;
             NetworkChange.NetworkAvailabilityChanged += OnNetworkAvailabilityChanged;
+        }
+
+        /// <summary>Ghi môi trường chạy một lần mỗi lần khởi động: đủ để chẩn đoán từ xa mà không cần hỏi người dùng.</summary>
+        private void LogEnvironment()
+        {
+            try
+            {
+                _log.Info("Phiên bản Reclaim " + System.Reflection.Assembly.GetExecutingAssembly().GetName().Version +
+                          "; Windows " + Environment.OSVersion.Version + (Environment.Is64BitOperatingSystem ? " 64-bit" : " 32-bit") +
+                          "; tiến trình " + (Environment.Is64BitProcess ? "64-bit" : "32-bit") + "; .NET " + Environment.Version);
+                _log.Info("Thư mục chạy: " + AppPaths.BaseDir + "; nextdns.exe " + (File.Exists(AppPaths.NextDnsExe) ? "có" : "KHÔNG có"));
+                _log.Info("IPv6 loopback bind được: " + NextDnsConfig.Ipv6LoopbackAvailable() +
+                          "; địa chỉ nextdns sẽ nghe: " + string.Join(", ", NextDnsConfig.DefaultListens()));
+                _log.Info("Adapter: " + new NetshDnsConfigurator(NullLog.Instance).DescribeAdapters());
+            }
+            catch (Exception ex)
+            {
+                _log.Warn("Không ghi được thông tin môi trường: " + ex.Message);
+            }
         }
 
         /// <summary>

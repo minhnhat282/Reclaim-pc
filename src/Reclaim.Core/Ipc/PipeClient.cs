@@ -14,6 +14,9 @@ namespace Reclaim.Core.Ipc
     {
         public const int DefaultTimeoutMs = 15000;
 
+        /// <summary>Nhật ký phía giao diện (đặt bởi Reclaim.exe). Mặc định không ghi.</summary>
+        public static Reclaim.Core.Application.ILog Log = NullLog.Instance;
+
         public static Response Send(Request request)
         {
             return Send(request, DefaultTimeoutMs);
@@ -41,6 +44,7 @@ namespace Reclaim.Core.Ipc
 
                 if (!ServerIsTrusted(pipe))
                 {
+                    Log.Error("Tiến trình giữ pipe không phải Reclaim.Service.exe đã cài; không gửi yêu cầu " + request.Op + ".");
                     throw new ReclaimException(ErrorCodes.BadServer,
                         "Tiến trình đang giữ kênh liên lạc không phải dịch vụ Reclaim đã cài. Không gửi thông tin tới nó.");
                 }
@@ -70,6 +74,7 @@ namespace Reclaim.Core.Ipc
             }
             catch (Exception ex)
             {
+                Log.Warn("Liên lạc với dịch vụ lỗi (" + (request == null ? "?" : request.Op) + "): " + ex.GetType().Name + ": " + ex.Message);
                 if (timedOut)
                 {
                     throw new ReclaimException(ErrorCodes.Timeout,
@@ -100,15 +105,27 @@ namespace Reclaim.Core.Ipc
         private static bool ServerIsTrusted(NamedPipeClientStream pipe)
         {
             uint pid;
-            if (!Native.GetNamedPipeServerProcessId(pipe.SafePipeHandle.DangerousGetHandle(), out pid)) return true;
+            if (!Native.GetNamedPipeServerProcessId(pipe.SafePipeHandle.DangerousGetHandle(), out pid))
+            {
+                Log.Warn("Không lấy được PID của máy chủ pipe (lỗi " + System.Runtime.InteropServices.Marshal.GetLastWin32Error() + "); bỏ qua bước xác minh.");
+                return true;
+            }
 
             IntPtr process = Native.OpenProcess(Native.PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
-            if (process == IntPtr.Zero) return true;
+            if (process == IntPtr.Zero)
+            {
+                Log.Warn("Không mở được tiến trình máy chủ pipe PID " + pid + " (lỗi " + System.Runtime.InteropServices.Marshal.GetLastWin32Error() + "); bỏ qua bước xác minh.");
+                return true;
+            }
             try
             {
                 var buffer = new StringBuilder(1024);
                 uint size = (uint)buffer.Capacity;
-                if (!Native.QueryFullProcessImageName(process, 0, buffer, ref size)) return true;
+                if (!Native.QueryFullProcessImageName(process, 0, buffer, ref size))
+                {
+                    Log.Warn("Không đọc được đường dẫn tiến trình máy chủ pipe PID " + pid + "; bỏ qua bước xác minh.");
+                    return true;
+                }
 
                 string actual = Path.GetFullPath(buffer.ToString());
                 string installed = Path.GetFullPath(Path.Combine(AppPaths.InstallDir, AppPaths.ServiceExeName));

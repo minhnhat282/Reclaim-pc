@@ -147,6 +147,25 @@ namespace Reclaim.Tests
         }
 
         [Fact]
+        public void Disable_WhenGuardCannotBeRemoved_KeepsProtection_AndNeverResetsDns()
+        {
+            var rig = new Rig();
+            rig.EnableWith("abc123");
+            rig.Guard.RemoveResult = false;
+            rig.Events.Clear();
+
+            var ex = Assert.Throws<ReclaimException>(() => rig.Engine.SaveSettings(null, "abc123", false));
+
+            Assert.Equal(ErrorCodes.ApplyFailed, ex.Code);
+            // Trả DNS khi quy tắc chặn DNS ngoài còn đó = máy mất DNS: tuyệt đối không được làm.
+            Assert.DoesNotContain("dns.reset", rig.Events);
+            Assert.Equal(0, rig.Runner.Stops);
+            Assert.True(rig.Engine.GetState(null).Enforcing);
+            Assert.True(rig.Store.Current.Enabled);
+            Assert.Contains("guard.ensure", rig.Events); // chặn đường vòng được áp lại
+        }
+
+        [Fact]
         public void Disable_WhenDnsCannotBeRestored_KeepsProtectionAndGuard()
         {
             var rig = new Rig();
@@ -271,6 +290,23 @@ namespace Reclaim.Tests
         }
 
         [Fact]
+        public void NoResponseWhileOffline_DoesNotCountTowardsRestart()
+        {
+            var rig = new Rig();
+            rig.EnableWith("abc123");
+            rig.Probe.Rcode = -1;
+            rig.Probe.NetworkAvailable = false;
+            TickTimes(rig, 6);                       // rớt mạng dài: không được dồn thành "3 lần không trả lời"
+
+            rig.Probe.NetworkAvailable = true;
+            TickTimes(rig, 2);
+            Assert.Equal(1, rig.Runner.Starts.Count); // mới 2 lần sau khi có mạng lại
+
+            TickTimes(rig, 1);
+            Assert.Equal(2, rig.Runner.Starts.Count); // lần thứ 3 sau khi có mạng: khởi động lại
+        }
+
+        [Fact]
         public void IssueClearsByItselfOnceNextDnsRecovers()
         {
             var rig = new Rig();
@@ -372,6 +408,21 @@ namespace Reclaim.Tests
 
             rig.Engine.SaveSettings(token, "abc123", true); // có token thì được
             Assert.True(rig.Engine.GetState(token).Enforcing);
+        }
+    }
+
+    public class EngineLogTests
+    {
+        [Fact]
+        public void GetLog_ContainsServiceLogTailAndNextDnsLog()
+        {
+            var rig = new Rig();
+            rig.Engine.LogTail = n => new System.Collections.Generic.List<string> { "dòng-dịch-vụ" };
+
+            string[] lines = rig.Engine.GetLog(null);
+
+            Assert.Contains("dòng-dịch-vụ", lines);
+            Assert.Contains(lines, l => l.Contains("nextdns"));
         }
     }
 }

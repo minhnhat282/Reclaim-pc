@@ -21,7 +21,13 @@ namespace Reclaim.Core.Ipc
         private const int IoTimeoutMs = 5000;
 
         private readonly Func<Request, bool, Response> _handler;
-        private bool _firstInstance = true; // chỉ luồng AcceptLoop đọc/ghi
+        // .NET Framework 4.8 không có PipeOptions.FirstPipeInstance (chỉ có từ .NET Core); giá trị tương ứng của Win32 là
+        // FILE_FLAG_FIRST_PIPE_INSTANCE = 0x00080000 và được chuyển thẳng cho CreateNamedPipe.
+        private const PipeOptions FirstPipeInstanceFlag = (PipeOptions)0x00080000;
+
+        private bool _firstInstance = true;        // chỉ luồng AcceptLoop đọc/ghi
+        private bool _useFirstInstanceFlag = true; // tắt nếu runtime từ chối cờ này
+        private string _lastPipeError = string.Empty;
         private readonly ILog _log;
         private volatile bool _stopped;
         private Thread _thread;
@@ -68,7 +74,7 @@ namespace Reclaim.Core.Ipc
                 {
                     // Cá thể đầu tiên dùng FirstPipeInstance: nếu một tiến trình khác đã chiếm tên pipe trước (giả mạo dịch vụ
                     // để nhận mật khẩu), việc tạo pipe thất bại thay vì âm thầm cùng dùng chung tên.
-                    PipeOptions options = _firstInstance ? PipeOptions.FirstPipeInstance : PipeOptions.None;
+                    PipeOptions options = _firstInstance && _useFirstInstanceFlag ? FirstPipeInstanceFlag : PipeOptions.None;
                     stream = new NamedPipeServerStream(AppPaths.PipeName, PipeDirection.InOut, MaxInstances,
                         PipeTransmissionMode.Byte, options, 4096, 4096, security);
                     _firstInstance = false;
@@ -77,11 +83,29 @@ namespace Reclaim.Core.Ipc
                     stream = null;
                     ThreadPool.QueueUserWorkItem(delegate { Serve(connection); });
                 }
+                catch (ArgumentOutOfRangeException ex)
+                {
+                    // Runtime không chấp nhận cờ FirstPipeInstance: chạy tiếp không có nó (vẫn kiểm tra tên pipe đã bị chiếm chưa).
+                    if (stream != null) stream.Dispose();
+                    if (_stopped) return;
+                    _useFirstInstanceFlag = false;
+                    _log.Warn("Pipe: runtime không hỗ trợ cờ FirstPipeInstance (" + ex.Message + "); dùng cách kiểm tra thay thế.");
+                    if (File.Exists(@"\\.\pipe\" + AppPaths.PipeName))
+                    {
+                        _log.Error("Tên pipe " + AppPaths.PipeName + " đã bị một tiến trình khác chiếm trước.");
+                        Thread.Sleep(2000);
+                    }
+                }
                 catch (Exception ex)
                 {
                     if (stream != null) stream.Dispose();
                     if (_stopped) return;
-                    _log.Warn("Pipe: " + ex.Message);
+                    // Chỉ ghi khi lỗi đổi, tránh tràn nhật ký khi tên pipe bị chiếm (vòng thử lại mỗi 2 giây).
+                    if (ex.Message != _lastPipeError)
+                    {
+                        _lastPipeError = ex.Message;
+                        _log.Warn("Pipe: " + ex.Message + (_firstInstance ? " (có thể tên pipe đã bị tiến trình khác chiếm trước)" : string.Empty));
+                    }
                     Thread.Sleep(_firstInstance ? 2000 : 500);
                 }
             }
