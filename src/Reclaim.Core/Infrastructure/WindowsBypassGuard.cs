@@ -103,6 +103,7 @@ namespace Reclaim.Core.Infrastructure
 
         private readonly ILog _log;
         private readonly HashSet<string> _reported = new HashSet<string>(); // lỗi đã ghi (Ensure chạy mỗi phút, không ghi lặp)
+        private bool _verifiedLogged;                                         // đã ghi dòng "đọc lại xác minh đủ quy tắc"
 
         public WindowsBypassGuard(ILog log)
         {
@@ -179,7 +180,9 @@ namespace Reclaim.Core.Infrastructure
                 return;
             }
 
-            foreach (RuleSpec spec in BuildRules())
+            int before = problems.Count;
+            IList<RuleSpec> specs = BuildRules();
+            foreach (RuleSpec spec in specs)
             {
                 try { EnsureRule(rules, spec); }
                 catch (Exception ex)
@@ -189,6 +192,60 @@ namespace Reclaim.Core.Infrastructure
                     problems.Add("quy tắc tường lửa \"" + spec.Name + "\" (" + message + ")");
                 }
             }
+            if (problems.Count == before) VerifyRules(rules, specs, problems);
+        }
+
+        /// <summary>
+        /// Đọc lại từ Windows Firewall sau khi tạo: "Add trả thành công" chưa đủ để tin quy tắc đang tồn tại và đúng.
+        /// Dòng xác minh (kèm thuộc tính từng quy tắc) chỉ ghi một lần cho tới khi trạng thái đổi.
+        /// </summary>
+        private void VerifyRules(object rules, IList<RuleSpec> specs, List<string> problems)
+        {
+            var missing = new List<string>();
+            var details = new List<string>();
+            foreach (RuleSpec spec in specs)
+            {
+                try
+                {
+                    object rule = FindRule(rules, spec.Name);
+                    if (rule != null && RuleMatches(rule, spec)) details.Add(DescribeRule(rule, spec.Name));
+                    else missing.Add(spec.Name);
+                }
+                catch (Exception ex)
+                {
+                    missing.Add(spec.Name + " (" + Describe(ex) + ")");
+                }
+            }
+
+            if (missing.Count == 0)
+            {
+                if (!_verifiedLogged)
+                {
+                    _verifiedLogged = true;
+                    _log.Info("Đã đọc lại xác minh: đủ " + specs.Count + "/" + specs.Count + " quy tắc tường lửa của Reclaim tồn tại và đang bật.");
+                    foreach (string line in details) _log.Info("  " + line);
+                }
+                return;
+            }
+            _verifiedLogged = false;
+            string text = "sau khi tạo, đọc lại chỉ thấy " + (specs.Count - missing.Count) + "/" + specs.Count +
+                          " quy tắc đúng (thiếu hoặc sai: " + string.Join(", ", missing) + ")";
+            WarnOnce("verify", "Quy tắc tường lửa: " + text);
+            problems.Add(text);
+        }
+
+        private static string DescribeRule(object rule, string name)
+        {
+            return name + ": bật=" + SafeGet(rule, "Enabled") + ", hướng=" + (SafeGet(rule, "Direction") == "2" ? "ra" : "vào") +
+                   ", hành động=" + (SafeGet(rule, "Action") == "0" ? "chặn" : "cho phép") + ", giao thức=" + SafeGet(rule, "Protocol") +
+                   ", cổng=" + SafeGet(rule, "RemotePorts") + ", profile=" + SafeGet(rule, "Profiles") +
+                   (SafeGet(rule, "ApplicationName").Length > 0 ? ", chương trình=" + SafeGet(rule, "ApplicationName") : string.Empty);
+        }
+
+        private static string SafeGet(object rule, string property)
+        {
+            try { return Convert.ToString(Get(rule, property)) ?? string.Empty; }
+            catch { return "?"; }
         }
 
         private void EnsureRule(object rules, RuleSpec spec)
