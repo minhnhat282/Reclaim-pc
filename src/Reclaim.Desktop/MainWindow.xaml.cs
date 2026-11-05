@@ -168,7 +168,15 @@ namespace Reclaim.Desktop
             }
             else if (s.NextDnsRunning && s.Enforcing)
             {
-                SetStatus(Strings.StatusProtected, "Ok");
+                if (!string.IsNullOrEmpty(s.Warning))
+                {
+                    SetStatus(Strings.StatusProtectedWarn, "Warn");
+                    ShowMessage(s.Warning, false);
+                }
+                else
+                {
+                    SetStatus(Strings.StatusProtected, "Ok");
+                }
             }
             else
             {

@@ -81,7 +81,8 @@ namespace Reclaim.Tests
 
             StateDto state = rig.Engine.GetState(null);
             Assert.True(state.Enforcing);
-            Assert.Contains("VPN", state.LastError);
+            Assert.Contains("VPN", state.Warning);          // cảnh báo, không phải lỗi: bảo vệ vẫn chạy
+            Assert.True(string.IsNullOrEmpty(state.LastError));
         }
 
         [Fact]
@@ -358,7 +359,8 @@ namespace Reclaim.Tests
 
             StateDto state = rig.Engine.GetState(null);
             Assert.True(state.Enforcing);
-            Assert.Contains("tường lửa", state.LastError);
+            Assert.Contains("tường lửa", state.Warning);
+            Assert.True(string.IsNullOrEmpty(state.LastError));
         }
     }
 

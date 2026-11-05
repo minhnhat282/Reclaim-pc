@@ -42,6 +42,9 @@ namespace Reclaim.Core.Contracts
         [DataMember(Name = "throttleSeconds")] public int ThrottleSeconds { get; set; }
         [DataMember(Name = "maintenanceSeconds")] public int MaintenanceSeconds { get; set; }
         [DataMember(Name = "lastError")] public string LastError { get; set; }
+
+        /// <summary>Cảnh báo không làm gián đoạn bảo vệ (ví dụ chưa tạo được quy tắc chặn đường vòng). Rỗng nếu không có.</summary>
+        [DataMember(Name = "warning")] public string Warning { get; set; }
         [DataMember(Name = "restartCount")] public int RestartCount { get; set; }
     }
 

@@ -23,7 +23,7 @@ namespace Reclaim.Core.Infrastructure
         private const int ProfilesAll = 0x7FFFFFFF;
         private const int ProtoTcp = 6;
         private const int ProtoUdp = 17;
-        private const string RuleVersion = "Reclaim v1";
+        private const string RuleVersion = "Reclaim managed v1";
         private const string PolicyBackupRoot = @"SOFTWARE\Reclaim\PolicyBackup";
 
         // Mọi địa chỉ trừ loopback (127.0.0.0/8 và ::1): truy vấn tới nextdns cục bộ không bao giờ bị chặn.
@@ -46,9 +46,28 @@ namespace Reclaim.Core.Infrastructure
             public string RemoteAddresses;
             public string Application;
 
+            /// <summary>
+            /// Phiên bản + dấu vân tay của đường dẫn/danh sách địa chỉ: đổi một trong hai thì quy tắc được tạo lại.
+            /// Chỉ dùng chữ, số, dấu cách: Windows lưu quy tắc dưới dạng chuỗi ngăn cách bằng "|" nên ký tự đó (và "=")
+            /// trong mô tả làm Add trả E_INVALIDARG.
+            /// </summary>
             public string Description
             {
-                get { return RuleVersion + " | " + (Application ?? "-") + " | " + (RemoteAddresses ?? "-"); }
+                get { return RuleVersion + " " + Fingerprint((Application ?? "-") + "/" + (RemoteAddresses ?? "-")); }
+            }
+
+            private static string Fingerprint(string text)
+            {
+                unchecked
+                {
+                    uint hash = 2166136261;
+                    foreach (char c in text)
+                    {
+                        hash ^= c;
+                        hash *= 16777619;
+                    }
+                    return hash.ToString("x8");
+                }
             }
         }
 
@@ -181,6 +200,25 @@ namespace Reclaim.Core.Infrastructure
                 Call(rules, "Remove", spec.Name);
             }
 
+            try
+            {
+                AddViaCom(rules, spec);
+                _log.Info("Đã tạo quy tắc tường lửa \"" + spec.Name + "\".");
+            }
+            catch (Exception comError)
+            {
+                // COM từ chối (ví dụ E_INVALIDARG): thử netsh, công cụ chính thức và chịu lỗi tốt hơn với chuỗi lạ.
+                string netshError;
+                if (!AddViaNetsh(spec, out netshError))
+                {
+                    throw new InvalidOperationException(Describe(comError) + "; netsh: " + netshError);
+                }
+                _log.Info("Đã tạo quy tắc tường lửa \"" + spec.Name + "\" bằng netsh (COM báo: " + Describe(comError) + ").");
+            }
+        }
+
+        private static void AddViaCom(object rules, RuleSpec spec)
+        {
             object rule = Activator.CreateInstance(Type.GetTypeFromProgID("HNetCfg.FWRule", true));
             Set(rule, "Name", spec.Name);
             Set(rule, "Description", spec.Description);
@@ -194,7 +232,23 @@ namespace Reclaim.Core.Infrastructure
             Set(rule, "Profiles", ProfilesAll);
             Set(rule, "Enabled", true);
             Call(rules, "Add", rule);
-            _log.Info("Đã tạo quy tắc tường lửa \"" + spec.Name + "\".");
+        }
+
+        private static bool AddViaNetsh(RuleSpec spec, out string error)
+        {
+            var args = new System.Text.StringBuilder("advfirewall firewall add rule");
+            args.Append(" name=\"").Append(spec.Name).Append('"');
+            args.Append(" dir=out action=block enable=yes profile=any");
+            args.Append(" protocol=").Append(spec.Protocol == ProtoTcp ? "TCP" : "UDP");
+            args.Append(" remoteport=").Append(spec.RemotePorts);
+            if (spec.Application != null) args.Append(" program=\"").Append(spec.Application).Append('"');
+            if (spec.RemoteAddresses != null) args.Append(" remoteip=").Append(spec.RemoteAddresses);
+            args.Append(" description=\"").Append(spec.Description).Append('"');
+            args.Append(" group=\"Reclaim\"");
+
+            ProcessResult result = ProcessUtil.Run("netsh.exe", args.ToString(), 20000);
+            error = result.Success ? null : (result.Output ?? "không rõ").Trim();
+            return result.Success;
         }
 
         private static bool RuleMatches(object rule, RuleSpec spec)

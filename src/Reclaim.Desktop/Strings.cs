@@ -5,6 +5,7 @@ namespace Reclaim.Desktop
     {
         public const string StatusChecking = "Đang kiểm tra…";
         public const string StatusProtected = "Đang bảo vệ";
+        public const string StatusProtectedWarn = "Đang bảo vệ (có cảnh báo)";
         public const string StatusOff = "Đã tắt";
         public const string StatusStarting = "Đang khởi động…";
         public const string StatusError = "Có lỗi";

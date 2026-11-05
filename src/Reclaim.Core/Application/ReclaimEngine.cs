@@ -195,8 +195,15 @@ namespace Reclaim.Core.Application
             {
                 bool hasPw = _settings.HasPassword;
                 long now = DateTime.UtcNow.Ticks;
+                // Lỗi = DNS không dùng được (nextdns hỏng) hoặc một thao tác vừa thất bại. Cảnh báo = bảo vệ vẫn chạy nhưng
+                // thiếu một lớp phụ (adapter lẻ chưa đặt được DNS, chưa tạo được quy tắc chặn đường vòng).
                 string error = _lastError;
-                if (string.IsNullOrEmpty(error) && _issues.Count > 0) error = string.Join(" ", _issues.Values);
+                var warnings = new List<string>();
+                foreach (KeyValuePair<string, string> issue in _issues)
+                {
+                    if (issue.Key == "nextdns") { if (string.IsNullOrEmpty(error)) error = issue.Value; }
+                    else warnings.Add(issue.Value);
+                }
                 return new StateDto
                 {
                     Enabled = _settings.Enabled,
@@ -209,6 +216,7 @@ namespace Reclaim.Core.Application
                     ThrottleSeconds = SecondsLeft(_settings.LockedUntilTicks - now),
                     MaintenanceSeconds = SecondsLeft(_maintenanceUntilUtc.Ticks - now),
                     LastError = error,
+                    Warning = string.Join(" ", warnings),
                     RestartCount = _runner.RestartCount
                 };
             }
