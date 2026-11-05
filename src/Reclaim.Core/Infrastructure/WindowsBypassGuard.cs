@@ -256,13 +256,18 @@ namespace Reclaim.Core.Infrastructure
             return Get(policy, "Rules");
         }
 
-        /// <returns>null nếu không có quy tắc tên đó. Mọi lỗi COM khi tra cứu được coi là "không có"; bước Add sau đó sẽ báo lỗi thật nếu tường lửa hỏng.</returns>
+        /// <returns>
+        /// null nếu không có quy tắc tên đó. Windows báo "không có" bằng COMException 0x80070002; tùy đường gọi, .NET ném nó
+        /// trực tiếp hoặc bọc trong TargetInvocationException, nên phải bắt cả hai. Mọi lỗi COM khác khi tra cứu cũng coi là "không có":
+        /// bước Add sau đó sẽ báo lỗi thật nếu tường lửa hỏng.
+        /// </returns>
         private static object FindRule(object rules, string name)
         {
             try { return Call(rules, "Item", name); }
-            catch (TargetInvocationException ex)
+            catch (Exception ex)
             {
-                if (ex.InnerException is COMException) return null;
+                Exception inner = ex is TargetInvocationException && ex.InnerException != null ? ex.InnerException : ex;
+                if (inner is COMException) return null;
                 throw;
             }
         }
