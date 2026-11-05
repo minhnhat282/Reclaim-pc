@@ -11,6 +11,16 @@ env:
   NEXTDNS_VERSION: "1.49.0"
 
 jobs:
+  # Unit test của ReclaimEngine (dùng đối tượng giả, không đụng tới Windows). Chạy song song, độc lập với việc tạo file cài đặt:
+  # test đỏ thì workflow đỏ, nhưng ReclaimSetup.exe vẫn được tạo để có thể thử tay.
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Chạy unit test
+        run: dotnet test src/Reclaim.Tests/Reclaim.Tests.csproj -c Release --nologo
+
   build:
     runs-on: windows-latest
     timeout-minutes: 25
