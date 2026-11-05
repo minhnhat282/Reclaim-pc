@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using Microsoft.Win32;
@@ -82,6 +83,7 @@ namespace Reclaim.Core.Infrastructure
         };
 
         private readonly ILog _log;
+        private readonly HashSet<string> _reported = new HashSet<string>(); // lỗi đã ghi (Ensure chạy mỗi phút, không ghi lặp)
 
         public WindowsBypassGuard(ILog log)
         {
@@ -94,12 +96,13 @@ namespace Reclaim.Core.Infrastructure
         {
             var problems = new List<string>();
             EnsureFirewall(problems);
+            if (problems.Count == 0) _reported.Clear(); // đã ổn: nếu lỗi quay lại thì ghi lại
             foreach (PolicySpec policy in Policies)
             {
                 try { SetPolicy(policy); }
                 catch (Exception ex)
                 {
-                    _log.Warn("Chính sách " + policy.Id + ": " + ex.Message);
+                    WarnOnce("policy:" + policy.Id, "Chính sách " + policy.Id + ": " + ex.Message);
                     problems.Add("chính sách " + policy.Id + " (" + ex.Message + ")");
                 }
             }
@@ -122,6 +125,11 @@ namespace Reclaim.Core.Infrastructure
         }
 
         // ------------------------------------------------------------------ tường lửa
+
+        private void WarnOnce(string key, string message)
+        {
+            if (_reported.Add(key + "|" + message)) _log.Warn(message);
+        }
 
         private static IList<RuleSpec> BuildRules()
         {
@@ -147,7 +155,7 @@ namespace Reclaim.Core.Infrastructure
             catch (Exception ex)
             {
                 string message = Describe(ex);
-                _log.Warn("Không mở được Windows Firewall: " + message);
+                WarnOnce("open", "Không mở được Windows Firewall: " + message);
                 problems.Add("tường lửa (" + message + ")");
                 return;
             }
@@ -158,7 +166,7 @@ namespace Reclaim.Core.Infrastructure
                 catch (Exception ex)
                 {
                     string message = Describe(ex);
-                    _log.Warn("Quy tắc tường lửa \"" + spec.Name + "\": " + message);
+                    WarnOnce("rule:" + spec.Name, "Quy tắc tường lửa \"" + spec.Name + "\": " + message);
                     problems.Add("quy tắc tường lửa \"" + spec.Name + "\" (" + message + ")");
                 }
             }
@@ -256,20 +264,29 @@ namespace Reclaim.Core.Infrastructure
             return Get(policy, "Rules");
         }
 
+        private const int HResultFileNotFound = unchecked((int)0x80070002);
+
         /// <returns>
-        /// null nếu không có quy tắc tên đó. Windows báo "không có" bằng COMException 0x80070002; tùy đường gọi, .NET ném nó
-        /// trực tiếp hoặc bọc trong TargetInvocationException, nên phải bắt cả hai. Mọi lỗi COM khác khi tra cứu cũng coi là "không có":
-        /// bước Add sau đó sẽ báo lỗi thật nếu tường lửa hỏng.
+        /// null nếu không có quy tắc tên đó. Windows báo "không có" bằng HRESULT 0x80070002, và .NET đổi HRESULT này thành
+        /// FileNotFoundException (không phải COMException), có thể bị bọc trong TargetInvocationException. Mọi lỗi khác được
+        /// ném tiếp: nếu coi lỗi lạ là "không có" thì mỗi lần kiểm tra lại tạo thêm một quy tắc trùng.
         /// </returns>
         private static object FindRule(object rules, string name)
         {
             try { return Call(rules, "Item", name); }
             catch (Exception ex)
             {
-                Exception inner = ex is TargetInvocationException && ex.InnerException != null ? ex.InnerException : ex;
-                if (inner is COMException) return null;
+                if (IsNotFound(ex)) return null;
                 throw;
             }
+        }
+
+        private static bool IsNotFound(Exception ex)
+        {
+            Exception inner = ex is TargetInvocationException && ex.InnerException != null ? ex.InnerException : ex;
+            if (inner is FileNotFoundException) return true;
+            COMException com = inner as COMException;
+            return com != null && com.ErrorCode == HResultFileNotFound;
         }
 
         // ------------------------------------------------------------------ chính sách registry
@@ -362,17 +379,29 @@ namespace Reclaim.Core.Infrastructure
 
         private static object Get(object target, string name)
         {
-            return target.GetType().InvokeMember(name, BindingFlags.GetProperty, null, target, null);
+            try { return target.GetType().InvokeMember(name, BindingFlags.GetProperty, null, target, null); }
+            catch (Exception ex) { throw Step("đọc " + name, ex); }
         }
 
         private static void Set(object target, string name, object value)
         {
-            target.GetType().InvokeMember(name, BindingFlags.SetProperty, null, target, new object[] { value });
+            try { target.GetType().InvokeMember(name, BindingFlags.SetProperty, null, target, new object[] { value }); }
+            catch (Exception ex) { throw Step("đặt " + name + "=" + value, ex); }
         }
 
         private static object Call(object target, string name, params object[] args)
         {
-            return target.GetType().InvokeMember(name, BindingFlags.InvokeMethod, null, target, args);
+            try { return target.GetType().InvokeMember(name, BindingFlags.InvokeMethod, null, target, args); }
+            catch (Exception ex)
+            {
+                if (name == "Item" && IsNotFound(ex)) throw; // trường hợp bình thường: để FindRule xử lý
+                throw Step("gọi " + name, ex);
+            }
+        }
+
+        private static InvalidOperationException Step(string step, Exception ex)
+        {
+            return new InvalidOperationException("bước \"" + step + "\": " + Describe(ex), ex);
         }
 
         private static string Describe(Exception ex)
