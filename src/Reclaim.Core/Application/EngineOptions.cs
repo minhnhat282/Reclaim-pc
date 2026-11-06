@@ -14,7 +14,10 @@ namespace Reclaim.Core.Application
         public TimeSpan StartupTimeout = TimeSpan.FromSeconds(60);
 
         // Watchdog trong Tick: khi khỏe thì kiểm tra thưa, khi lỗi thì kiểm tra dày hơn.
-        public TimeSpan WatchdogInterval = TimeSpan.FromSeconds(30);
+        // Mỗi lần thăm dò là MỘT truy vấn thật tới NextDNS (tên ngẫu nhiên reclaim-xxxx.example.com để không trúng cache), và nó được tính
+        // vào hạn mức truy vấn của gói NextDNS (gói miễn phí 300.000/tháng): 30 giây/lần tốn ~86.000/tháng, 5 phút/lần chỉ ~8.600.
+        // nextdns treo là hiếm nên 5 phút là đủ; khi đã thấy bất thường thì dày lại theo WatchdogRetryInterval.
+        public TimeSpan WatchdogInterval = TimeSpan.FromMinutes(5);
         public TimeSpan WatchdogRetryInterval = TimeSpan.FromSeconds(5);
         public int WatchdogProbeTimeoutMs = 8000;
 
