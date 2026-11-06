@@ -46,6 +46,21 @@ jobs:
               if ($LASTEXITCODE -eq 0) { $ok = $true; break }
             }
             if (-not $ok) { throw "Không tải được $asset từ nextdns/nextdns" }
+            # Đối chiếu với checksums.txt do chính nextdns công bố cùng bản phát hành. Có file mà không khớp hoặc không liệt kê
+            # gói này thì dừng build; không tải được file thì chỉ cảnh báo.
+            gh release download $tag --repo nextdns/nextdns --pattern checksums.txt --dir nextdns-dl --clobber 2>$null
+            $sums = "nextdns-dl/checksums.txt"
+            if ($LASTEXITCODE -eq 0 -and (Test-Path $sums)) {
+              $zipHash = (Get-FileHash "nextdns-dl/$asset" -Algorithm SHA256).Hash.ToLower()
+              $line = Get-Content $sums | Where-Object { $_ -match [regex]::Escape($asset) } | Select-Object -First 1
+              if (-not $line) { throw "checksums.txt chính thức không liệt kê $asset" }
+              $official = ([regex]::Match($line, '[0-9a-fA-F]{64}')).Value.ToLower()
+              if ($zipHash -ne $official) { throw "SHA-256 của $asset ($zipHash) không khớp checksums.txt chính thức ($official)" }
+              Write-Host "Đã xác minh $asset với checksums.txt chính thức."
+              "$asset khớp checksums.txt chính thức của nextdns." | Out-File -Append $env:GITHUB_STEP_SUMMARY
+            } else {
+              Write-Warning "Không tải được checksums.txt chính thức để đối chiếu."
+            }
             Expand-Archive "nextdns-dl/$asset" -DestinationPath nextdns-dl/x -Force
             $exe = Get-ChildItem nextdns-dl/x -Recurse -Filter nextdns.exe | Select-Object -First 1
             if (-not $exe) { throw "Không thấy nextdns.exe trong $asset" }
