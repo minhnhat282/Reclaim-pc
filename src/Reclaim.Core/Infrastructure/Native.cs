@@ -6,6 +6,7 @@ namespace Reclaim.Core.Infrastructure
     internal static class Native
     {
         public const uint SC_MANAGER_CONNECT = 0x0001;
+        public const uint SERVICE_QUERY_STATUS = 0x0004;
         public const uint WRITE_DAC = 0x00040000;
         public const uint DACL_SECURITY_INFORMATION = 0x00000004;
         public const uint SDDL_REVISION_1 = 1;
@@ -23,6 +24,11 @@ namespace Reclaim.Core.Infrastructure
         [DllImport("advapi32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
         public static extern bool CloseServiceHandle(IntPtr handle);
+
+        /// <summary>infoLevel 0 = SC_STATUS_PROCESS_INFO; bộ đệm là SERVICE_STATUS_PROCESS (9 DWORD = 36 byte, dwProcessId ở offset 28).</summary>
+        [DllImport("advapi32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool QueryServiceStatusEx(IntPtr service, int infoLevel, IntPtr buffer, int bufferSize, out int bytesNeeded);
 
         [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
         [return: MarshalAs(UnmanagedType.Bool)]

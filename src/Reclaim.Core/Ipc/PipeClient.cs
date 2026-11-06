@@ -97,24 +97,43 @@ namespace Reclaim.Core.Ipc
             }
         }
 
+        // Mỗi lý do "không xác minh được" chỉ ghi một lần cho mỗi lần chạy giao diện (giao diện hỏi dịch vụ mỗi ~2,5 giây).
+        private static readonly System.Collections.Generic.HashSet<string> _logged = new System.Collections.Generic.HashSet<string>();
+
+        private static void LogOnce(string key, string message)
+        {
+            lock (_logged)
+            {
+                if (!_logged.Add(key)) return;
+            }
+            Log.Warn(message);
+        }
+
         /// <summary>
-        /// Tiến trình giữ đầu pipe phía máy chủ phải chạy từ đúng file Reclaim.Service.exe đã cài (thư mục Program Files
-        /// mà tài khoản thường không ghi được). Khi chưa cài đặt (chạy thử từ thư mục build) thì chấp nhận file cạnh ứng dụng.
-        /// Chỉ từ chối khi xác định được đường dẫn và nó KHÔNG khớp; không đọc được thông tin tiến trình thì cho qua.
+        /// Xác minh tiến trình giữ đầu pipe phía máy chủ chính là dịch vụ Reclaim đã đăng ký.
+        ///  1. Cách chính: hỏi Service Control Manager PID của dịch vụ "Reclaim" và so với PID của máy chủ pipe. Tài khoản thường
+        ///     được phép hỏi trạng thái dịch vụ (DACL dịch vụ có quyền LC cho người dùng), trong khi KHÔNG mở được tiến trình
+        ///     SYSTEM của dịch vụ (OpenProcess báo lỗi 5), nên cách đường dẫn tiến trình không dùng được cho tài khoản thường.
+        ///  2. Dự phòng (SCM không cho biết PID: chưa cài đặt, đang chạy thử từ thư mục build): so đường dẫn file thực thi nếu mở được.
+        /// Chỉ từ chối khi xác định được và KHÔNG khớp; không xác minh được thì cho qua và ghi nhật ký một lần.
         /// </summary>
         private static bool ServerIsTrusted(NamedPipeClientStream pipe)
         {
             uint pid;
             if (!Native.GetNamedPipeServerProcessId(pipe.SafePipeHandle.DangerousGetHandle(), out pid))
             {
-                Log.Warn("Không lấy được PID của máy chủ pipe (lỗi " + System.Runtime.InteropServices.Marshal.GetLastWin32Error() + "); bỏ qua bước xác minh.");
+                LogOnce("pid", "Không lấy được PID của máy chủ pipe (lỗi " + System.Runtime.InteropServices.Marshal.GetLastWin32Error() + "); bỏ qua bước xác minh.");
                 return true;
             }
+
+            uint servicePid = QueryServicePid();
+            if (servicePid != 0) return servicePid == pid;
 
             IntPtr process = Native.OpenProcess(Native.PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
             if (process == IntPtr.Zero)
             {
-                Log.Warn("Không mở được tiến trình máy chủ pipe PID " + pid + " (lỗi " + System.Runtime.InteropServices.Marshal.GetLastWin32Error() + "); bỏ qua bước xác minh.");
+                LogOnce("open", "SCM không cho biết PID dịch vụ và không mở được tiến trình máy chủ pipe (lỗi " +
+                                System.Runtime.InteropServices.Marshal.GetLastWin32Error() + "); bỏ qua bước xác minh.");
                 return true;
             }
             try
@@ -123,7 +142,7 @@ namespace Reclaim.Core.Ipc
                 uint size = (uint)buffer.Capacity;
                 if (!Native.QueryFullProcessImageName(process, 0, buffer, ref size))
                 {
-                    Log.Warn("Không đọc được đường dẫn tiến trình máy chủ pipe PID " + pid + "; bỏ qua bước xác minh.");
+                    LogOnce("path", "Không đọc được đường dẫn tiến trình máy chủ pipe; bỏ qua bước xác minh.");
                     return true;
                 }
 
@@ -141,6 +160,41 @@ namespace Reclaim.Core.Ipc
             finally
             {
                 Native.CloseHandle(process);
+            }
+        }
+
+        /// <returns>PID tiến trình của dịch vụ Reclaim theo SCM; 0 nếu không biết (chưa cài, đang dừng, không đủ quyền).</returns>
+        private static uint QueryServicePid()
+        {
+            IntPtr manager = Native.OpenSCManager(null, null, Native.SC_MANAGER_CONNECT);
+            if (manager == IntPtr.Zero) return 0;
+            try
+            {
+                IntPtr service = Native.OpenService(manager, AppPaths.ServiceName, Native.SERVICE_QUERY_STATUS);
+                if (service == IntPtr.Zero) return 0;
+                try
+                {
+                    const int size = 36; // sizeof(SERVICE_STATUS_PROCESS)
+                    IntPtr buffer = System.Runtime.InteropServices.Marshal.AllocHGlobal(size);
+                    try
+                    {
+                        int needed;
+                        if (!Native.QueryServiceStatusEx(service, 0, buffer, size, out needed)) return 0;
+                        return (uint)System.Runtime.InteropServices.Marshal.ReadInt32(buffer, 28); // dwProcessId
+                    }
+                    finally
+                    {
+                        System.Runtime.InteropServices.Marshal.FreeHGlobal(buffer);
+                    }
+                }
+                finally
+                {
+                    Native.CloseServiceHandle(service);
+                }
+            }
+            finally
+            {
+                Native.CloseServiceHandle(manager);
             }
         }
     }
