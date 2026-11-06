@@ -27,6 +27,8 @@ namespace Reclaim.Desktop
 
         private bool _placing;    // đang tự đặt vị trí (không tính là người dùng kéo cửa sổ)
         private bool _userMoved;  // người dùng đã kéo cửa sổ: thôi tự căn giữa
+        private bool _pendingCenter;        // căn giữa lại một lần khi trạng thái đầu tiên làm cửa sổ đổi kích thước
+        private bool _centeredAfterState;   // đã đặt _pendingCenter cho lần nạp trạng thái đầu tiên
 
         public MainWindow()
         {
@@ -40,7 +42,19 @@ namespace Reclaim.Desktop
                 _timer.Start();
             };
             // Kích thước đổi (khi nạp xong trạng thái, hiện/ẩn thông báo...): căn giữa lại cho tới khi người dùng tự kéo.
-            SizeChanged += delegate { if (IsLoaded && !_userMoved) PlaceOnScreen(); };
+            SizeChanged += delegate
+            {
+                if (!IsLoaded) return;
+                if (_pendingCenter && !_userMoved)
+                {
+                    PlaceOnScreen();
+                    _pendingCenter = false;
+                }
+                else
+                {
+                    KeepOnScreen();
+                }
+            };
             LocationChanged += delegate { if (IsLoaded && !_placing) _userMoved = true; };
             _timer.Tick += async delegate
             {
@@ -63,6 +77,22 @@ namespace Reclaim.Desktop
             {
                 Left = area.Left + Math.Max(0, (area.Width - width) / 2);
                 Top = area.Top + Math.Max(0, (area.Height - height) / 2);
+            }
+            finally
+            {
+                _placing = false;
+            }
+        }
+
+        /// <summary>Cửa sổ đổi chiều cao (hiện/ẩn thông báo...): chỉ kéo vào lại vùng làm việc nếu tràn, KHÔNG căn giữa lại để khỏi nhảy.</summary>
+        private void KeepOnScreen()
+        {
+            Rect area = SystemParameters.WorkArea;
+            _placing = true;
+            try
+            {
+                if (Top + ActualHeight > area.Bottom) Top = Math.Max(area.Top, area.Bottom - ActualHeight);
+                if (Top < area.Top) Top = area.Top;
             }
             finally
             {
@@ -131,6 +161,11 @@ namespace Reclaim.Desktop
 
         private void ApplyState(StateDto s)
         {
+            if (!_centeredAfterState)
+            {
+                _centeredAfterState = true;
+                _pendingCenter = true;
+            }
             UnavailablePanel.Visibility = Visibility.Collapsed;
             MainPanel.Visibility = Visibility.Visible;
 
@@ -233,7 +268,15 @@ namespace Reclaim.Desktop
         private async Task RunAsync(Func<Task> operation, string busyText)
         {
             _busy = true;
-            ShowMessage(busyText ?? string.Empty, false);
+            if (!string.IsNullOrEmpty(busyText))
+            {
+                ShowMessage(busyText, false);
+            }
+            else if (MessageText.Visibility == Visibility.Visible)
+            {
+                // Ẩn nhưng GIỮ chỗ: xóa hẳn (Collapsed) làm cửa sổ co lại trong lúc dịch vụ xử lý rồi giãn ra khi có thông báo mới.
+                MessageText.Visibility = Visibility.Hidden;
+            }
             MainPanel.IsEnabled = false;
             try
             {
@@ -245,6 +288,8 @@ namespace Reclaim.Desktop
             }
             finally
             {
+                // Thao tác không đặt thông báo mới: lúc này mới thu hẹp chỗ đã giữ.
+                if (MessageText.Visibility == Visibility.Hidden) MessageText.Visibility = Visibility.Collapsed;
                 MainPanel.IsEnabled = true;
                 _busy = false;
                 await RefreshAsync();
