@@ -17,7 +17,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Chạy unit test
         run: dotnet test src/Reclaim.Tests/Reclaim.Tests.csproj -c Release --nologo
 
@@ -29,7 +29,7 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # nextdns.exe không nằm trong repo (.gitignore). Tải bản phát hành chính thức nếu chưa có.
       # Nếu có file third_party/nextdns/nextdns.sha256 (một dòng SHA-256 của nextdns.exe) thì BẮT BUỘC khớp.
@@ -87,7 +87,7 @@ jobs:
             Write-Warning "Chưa có $pin nên không ghim hash. Hãy chép giá trị trên vào file đó (xem README)."
           }
 
-      - uses: microsoft/setup-msbuild@v2
+      - uses: microsoft/setup-msbuild@v3
 
       - name: Build Release
         run: msbuild Reclaim.sln /restore /p:Configuration=Release /t:Rebuild /v:minimal
@@ -111,7 +111,7 @@ jobs:
           & $iscc installer\Reclaim.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC thất bại" }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: ReclaimSetup
           path: installer/Output/ReclaimSetup.exe
